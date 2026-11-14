@@ -1,0 +1,47 @@
+# IRONCLAD Engine Configuration
+engine:
+  name: "IRONCLAD-Phase1-Core"
+  version: "1.0.0"
+
+ingestion:
+  backend: "scapy"             # Options: "scapy", "pyshark"
+  batch_size: 1000             # Streaming batch count for chunked processing
+  max_packets: null            # Maximum packets to read (null for all)
+  bpf_filter: ""               # Berkeley Packet Filter syntax (e.g., "tcp or udp")
+
+parsing:
+  parse_payload: true          # Extract application-layer payload chunks
+  payload_preview_bytes: 64    # Byte length preserved for payload previews
+  compute_packet_entropy: true # Calculate Shannon entropy on each packet payload
+
+features:
+  bidirectional_flows: true    # Aggregate both directions into a unified canonical flow
+  flow_timeout_seconds: 120.0  # Inactive timeout to close/flush an ongoing flow
+  entropy_block_size: 256      # Window size for Shannon byte entropy analysis
+
+anomaly:
+  contamination: 0.05          # Expected proportion of outliers in IsolationForest
+  n_estimators: 100            # Decision trees for IsolationForest
+  z_score_threshold: 3.0       # Standard deviation threshold for statistical outlier
+  iqr_multiplier: 1.5          # IQR multiplier for Tukey fence outlier detection
+  random_state: 42             # Seed for reproducible IsolationForest modeling
+
+graph:
+  calculate_pagerank: true     # Compute PageRank on communication endpoints
+  calculate_clustering: true   # Compute local clustering coefficient
+  fanout_threshold: 10.0       # out_degree / (in_degree + 1) ratio flagging scanning/beaconing
+
+risk:
+  anomaly_weight: 0.40         # Contribution of ML/statistical anomaly score
+  graph_weight: 0.30           # Contribution of topological centrality anomaly
+  rule_weight: 0.30            # Contribution of heuristic security rule violations
+  severity_thresholds:
+    critical: 80.0
+    high: 60.0
+    medium: 35.0
+    low: 0.0
+
+logging:
+  level: "INFO"                # Options: "DEBUG", "INFO", "WARNING", "ERROR"
+  log_file: "logs/ironclad.log"
+  enable_console: true
