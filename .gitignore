@@ -1,12 +1,14 @@
-# Byte-compiled / optimized / DLL files
+# ==========================================
+# Python / FastAPI & C Extensions
+# ==========================================
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
 
-# Distribution / packaging
+# ==========================================
+# Distribution / Packaging
+# ==========================================
 .Python
 build/
 develop-eggs/
@@ -26,7 +28,9 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# ==========================================
 # Virtual Environments
+# ==========================================
 .venv/
 venv/
 ENV/
@@ -34,17 +38,37 @@ env/
 env.bak/
 venv.bak/
 
-# Network Capture Files (Prevent accidental commit of multi-gigabyte traces)
+# ==========================================
+# Node.js / React Frontend
+# ==========================================
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ==========================================
+# Database Files & SQLite State
+# ==========================================
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# ==========================================
+# Network Capture Files
+# ==========================================
 *.pcap
 *.pcapng
 *.cap
 !data/sample_traffic.pcap
 
+# ==========================================
 # Application & Engine Logs
+# ==========================================
 *.log
 logs/
 
-# Unit test / coverage reporting
+# ==========================================
+# Testing & Coverage
+# ==========================================
 .tox/
 .nox/
 .coverage
@@ -58,17 +82,23 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# ==========================================
 # Jupyter / IPython
+# ==========================================
 .ipynb_checkpoints
 
+# ==========================================
 # IDE / Editor Environments
+# ==========================================
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
 
-# Windows specific
+# ==========================================
+# Windows Specific
+# ==========================================
 Thumbs.db
 Thumbs.db:encryptable
 ehthumbs.db
