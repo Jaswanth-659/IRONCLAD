@@ -20,15 +20,21 @@ from ironclad.engines.connection import ConnectionBehaviourEngine
 from ironclad.engines.decision import DecisionCorrelationEngine
 from ironclad.engines.temporal import TemporalBehaviourEngine
 from ironclad.engines.traffic import TrafficBehaviourEngine
+from ironclad.features.data_loss import DataLossMonitor
 from ironclad.features.flow_aggregator import FlowAggregator
+from ironclad.features.traffic_rate import TrafficRateMonitor
 from ironclad.graph.metrics import GraphMetricAnalyzer
 from ironclad.graph.topology import NetworkGraphBuilder
 from ironclad.ingestion.pcap_reader import PCAPReader
 from ironclad.parsing.dissector import PacketDissector
 from ironclad.server.database import (
+    build_and_save_session_topology,
     complete_session,
     save_engine_evaluation,
     save_incident,
+    save_session_data_loss,
+    save_session_dynamic_flags,
+    save_session_traffic_rates,
     save_subengine_evaluation,
     update_session_progress,
 )
@@ -65,6 +71,8 @@ async def execute_pcap_analysis(task_id: str, pcap_path: str, filename: str) -> 
         total_packets = dissection_result["total_packets"]
         total_bytes = dissection_result["total_bytes"]
         duration = dissection_result["duration"]
+        data_loss_report = dissection_result.get("data_loss_report")
+        traffic_rate_report = dissection_result.get("traffic_rate_report")
 
         update_session_progress(task_id, 35.0, "Running Primary Detection Engines")
         await ws_manager.broadcast("ANALYSIS_PROGRESS", {
@@ -92,13 +100,29 @@ async def execute_pcap_analysis(task_id: str, pcap_path: str, filename: str) -> 
         })
 
         # Step 3: Run Decision and Correlation Engine (Engine 4)
+        decision_context = {
+            "data_loss": data_loss_report,
+            "traffic_rate": traffic_rate_report,
+            "dynamic_flags": traffic_rate_report.rate_flags if traffic_rate_report else [],
+        }
         decision_report = await loop.run_in_executor(
-            _executor, _sync_run_decision_engine, engine_evaluations, flows, host_metrics
+            _executor, _sync_run_decision_engine, engine_evaluations, flows, host_metrics, decision_context
         )
 
         # Step 4: Persist Results to SQLite
         await loop.run_in_executor(
-            _executor, _sync_persist_results, task_id, decision_report, total_packets, total_bytes, len(flows), len(host_metrics), duration
+            _executor,
+            _sync_persist_results,
+            task_id,
+            decision_report,
+            total_packets,
+            total_bytes,
+            len(flows),
+            len(host_metrics),
+            duration,
+            pcap_path,
+            data_loss_report,
+            traffic_rate_report,
         )
 
         # Step 5: Final completion update
@@ -113,6 +137,8 @@ async def execute_pcap_analysis(task_id: str, pcap_path: str, filename: str) -> 
             "unique_hosts": len(host_metrics),
             "summary": decision_report.executive_summary,
             "recommended_actions": decision_report.recommended_actions,
+            "data_loss": data_loss_report.to_dict() if data_loss_report else None,
+            "traffic_rates": traffic_rate_report.to_dict() if traffic_rate_report else None,
         })
         logger.info("Successfully finished analysis for task %s with risk %.2f", task_id, decision_report.overall_risk_score)
 
@@ -126,11 +152,13 @@ async def execute_pcap_analysis(task_id: str, pcap_path: str, filename: str) -> 
 
 
 def _sync_dissect_and_aggregate(pcap_path: str) -> Dict[str, Any]:
-    """Synchronous CPU worker: Read packets, dissect headers, aggregate flows & graph."""
+    """Synchronous CPU worker: Read packets, dissect headers, aggregate flows, graph, loss, and rates."""
     reader = PCAPReader(pcap_path)
     dissector = PacketDissector(parse_payload=True, compute_entropy=True)
     aggregator = FlowAggregator(bidirectional=True)
     graph_builder = NetworkGraphBuilder()
+    loss_monitor = DataLossMonitor()
+    rate_monitor = TrafficRateMonitor()
 
     total_packets = 0
     total_bytes = 0
@@ -148,6 +176,8 @@ def _sync_dissect_and_aggregate(pcap_path: str) -> Dict[str, Any]:
 
             aggregator.add_packet(summary)
             graph_builder.add_packet(summary)
+            loss_monitor.ingest_packet(summary, raw_scapy_packet=pkt)
+            rate_monitor.ingest_packet(summary)
 
     flows = aggregator.get_flows()
     graph = graph_builder.get_graph()
@@ -155,12 +185,17 @@ def _sync_dissect_and_aggregate(pcap_path: str) -> Dict[str, Any]:
     host_metrics = analyzer.analyze(graph)
     duration = max(0.0, (last_ts or 0.0) - (first_ts or 0.0))
 
+    data_loss_report = loss_monitor.generate_report()
+    traffic_rate_report = rate_monitor.generate_report()
+
     return {
         "flows": flows,
         "host_metrics": host_metrics,
         "total_packets": total_packets,
         "total_bytes": total_bytes,
         "duration": duration,
+        "data_loss_report": data_loss_report,
+        "traffic_rate_report": traffic_rate_report,
     }
 
 
@@ -181,10 +216,15 @@ def _sync_run_detection_engines(flows: List[Any], host_metrics: Dict[str, Any]) 
     }
 
 
-def _sync_run_decision_engine(engine_evaluations: Dict[str, Any], flows: List[Any], host_metrics: Dict[str, Any]) -> Any:
+def _sync_run_decision_engine(
+    engine_evaluations: Dict[str, Any],
+    flows: List[Any],
+    host_metrics: Dict[str, Any],
+    context: Optional[Dict[str, Any]] = None,
+) -> Any:
     """Synchronous worker: Run Engine 4 (Decision and Correlation)."""
     decision_engine = DecisionCorrelationEngine()
-    return decision_engine.evaluate(engine_evaluations, flows, host_metrics)
+    return decision_engine.evaluate(engine_evaluations, flows, host_metrics, context=context)
 
 
 def _sync_persist_results(
@@ -195,8 +235,11 @@ def _sync_persist_results(
     total_flows: int,
     unique_hosts: int,
     duration: float,
+    pcap_path: Optional[str] = None,
+    data_loss_report: Optional[Any] = None,
+    traffic_rate_report: Optional[Any] = None,
 ) -> None:
-    """Save all evaluation outputs, sub-engines, and derived incidents to SQLite."""
+    """Save all evaluation outputs, sub-engines, data loss, traffic rates, and derived incidents to SQLite."""
     # Complete main session record
     complete_session(
         task_id=task_id,
@@ -209,6 +252,22 @@ def _sync_persist_results(
         final_classification=decision_report.final_classification.value,
         executive_summary=decision_report.executive_summary,
     )
+
+    # Persist session data loss telemetry
+    if data_loss_report is not None:
+        try:
+            save_session_data_loss(task_id, data_loss_report.to_dict())
+        except Exception as e:
+            logger.error("Failed saving session data loss for %s: %s", task_id, e)
+
+    # Persist traffic rate telemetry & dynamic flags
+    if traffic_rate_report is not None:
+        try:
+            save_session_traffic_rates(task_id, traffic_rate_report.to_dict())
+            all_flags = [f.to_dict() if hasattr(f, "to_dict") else f for f in traffic_rate_report.rate_flags]
+            save_session_dynamic_flags(task_id, all_flags)
+        except Exception as e:
+            logger.error("Failed saving session traffic rates or dynamic flags for %s: %s", task_id, e)
 
     # Persist Primary Engines & Sub-Engines
     for eng_id, eng in decision_report.engine_results.items():
@@ -267,3 +326,9 @@ def _sync_persist_results(
                     description=sub.explanation,
                     evidence=sub.evidence,
                 )
+
+    # Persist extracted network topology for this session
+    try:
+        build_and_save_session_topology(task_id, pcap_path)
+    except Exception as e:
+        logger.error("Failed to build topology for session %s: %s", task_id, e)

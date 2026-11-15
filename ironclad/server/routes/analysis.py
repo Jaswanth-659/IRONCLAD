@@ -11,13 +11,17 @@ from fastapi import APIRouter, HTTPException
 from ironclad.server.database import get_db_connection
 from ironclad.server.models import (
     AnalysisStatusResponse,
+    DataLossResponse,
+    DynamicThresholdsResponse,
     EnginesResponse,
     OverviewStats,
     PrimaryEngineDetail,
+    RiskFactorResponse,
     SubEngineDetail,
     TopologyLink,
     TopologyNode,
     TopologyResponse,
+    TrafficRatesResponse,
 )
 
 router = APIRouter(prefix="/api", tags=["Analysis & Engines"])
@@ -166,13 +170,18 @@ def get_primary_engines() -> EnginesResponse:
 
 
 @router.get("/sub-engines", response_model=List[SubEngineDetail])
-def get_all_subengines() -> List[SubEngineDetail]:
+def get_all_subengines(session_id: Optional[str] = None) -> List[SubEngineDetail]:
     """
     Returns all 12 secondary investigation modules with their forensic findings and scores.
+    Optionally filter by session_id; defaults to the latest completed session.
     """
     conn = get_db_connection()
-    cur = conn.execute("SELECT task_id FROM analysis_sessions WHERE status = 'COMPLETED' ORDER BY id DESC LIMIT 1")
-    session = cur.fetchone()
+    if session_id:
+        cur = conn.execute("SELECT task_id FROM analysis_sessions WHERE task_id = ?", (session_id,))
+        session = cur.fetchone()
+    else:
+        cur = conn.execute("SELECT task_id FROM analysis_sessions WHERE status = 'COMPLETED' ORDER BY id DESC LIMIT 1")
+        session = cur.fetchone()
     if not session:
         return []
 
@@ -198,124 +207,63 @@ def get_all_subengines() -> List[SubEngineDetail]:
     return results
 
 
+@router.get("/sessions")
+def get_analysis_sessions() -> List[Dict[str, Any]]:
+    """Returns recent analysis sessions for session selector and status audit."""
+    conn = get_db_connection()
+    cur = conn.execute(
+        """SELECT task_id, filename, file_size, status, progress, total_packets,
+                  total_flows, unique_hosts, overall_risk_score, final_classification,
+                  created_at, completed_at
+           FROM analysis_sessions ORDER BY id DESC LIMIT 25"""
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
 @router.get("/topology", response_model=TopologyResponse)
-def get_network_topology() -> TopologyResponse:
+def get_network_topology(session_id: Optional[str] = None) -> TopologyResponse:
     """
-    Returns host topology nodes and communication edges enriched with risk metrics and containment states.
+    Returns actual host communication topology extracted from the requested or latest PCAP session.
     """
     conn = get_db_connection()
+    target_session = None
+    if session_id:
+        cur = conn.execute("SELECT task_id FROM analysis_sessions WHERE task_id = ?", (session_id,))
+        target_session = cur.fetchone()
+    if not target_session:
+        cur = conn.execute("SELECT task_id FROM analysis_sessions WHERE status = 'COMPLETED' ORDER BY id DESC LIMIT 1")
+        target_session = cur.fetchone()
 
-    # Query containment statuses
-    cur_cont = conn.execute("SELECT ip, status FROM host_containment")
-    containment_map = {r["ip"]: r["status"] for r in cur_cont.fetchall()}
+    if not target_session:
+        return TopologyResponse(
+            session_id="",
+            nodes=[],
+            links=[],
+            total_nodes=0,
+            total_links=0,
+            total_hosts=0,
+            total_connections=0,
+            suspicious_hosts=0,
+            critical_hosts=0,
+        )
 
-    # Standard representative topology nodes from network communication
-    nodes = [
-        TopologyNode(
-            id="192.168.1.50",
-            label="Internal Client Workstation",
-            role="CLIENT",
-            degree=6,
-            in_degree=2,
-            out_degree=4,
-            bytes_sent=15200,
-            bytes_recv=45800,
-            fan_out_ratio=1.33,
-            pagerank=0.312,
-            risk_score=2.5,
-            is_suspicious=False,
-            containment_status=containment_map.get("192.168.1.50", "NORMAL"),
-        ),
-        TopologyNode(
-            id="192.168.1.1",
-            label="Core Gateway & DNS",
-            role="GATEWAY",
-            degree=8,
-            in_degree=4,
-            out_degree=4,
-            bytes_sent=82000,
-            bytes_recv=64000,
-            fan_out_ratio=0.80,
-            pagerank=0.254,
-            risk_score=1.0,
-            is_suspicious=False,
-            containment_status=containment_map.get("192.168.1.1", "NORMAL"),
-        ),
-        TopologyNode(
-            id="10.0.0.99",
-            label="Reconnaissance Host",
-            role="SCANNER",
-            degree=12,
-            in_degree=1,
-            out_degree=11,
-            bytes_sent=18400,
-            bytes_recv=1200,
-            fan_out_ratio=5.50,
-            pagerank=0.085,
-            risk_score=8.4,
-            is_suspicious=True,
-            containment_status=containment_map.get("10.0.0.99", "NORMAL"),
-        ),
-        TopologyNode(
-            id="192.168.1.88",
-            label="Compromised Data Server",
-            role="SERVER",
-            degree=5,
-            in_degree=1,
-            out_degree=4,
-            bytes_sent=95400,
-            bytes_recv=4200,
-            fan_out_ratio=2.00,
-            pagerank=0.145,
-            risk_score=9.1,
-            is_suspicious=True,
-            containment_status=containment_map.get("192.168.1.88", "NORMAL"),
-        ),
-        TopologyNode(
-            id="198.51.100.77",
-            label="Verified C2 Endpoint",
-            role="C2_DESTINATION",
-            degree=3,
-            in_degree=3,
-            out_degree=0,
-            bytes_sent=0,
-            bytes_recv=95400,
-            fan_out_ratio=0.00,
-            pagerank=0.180,
-            risk_score=9.8,
-            is_suspicious=True,
-            containment_status=containment_map.get("198.51.100.77", "NORMAL"),
-        ),
-        TopologyNode(
-            id="93.184.216.34",
-            label="External Web Server (example.com)",
-            role="WEB_SERVER",
-            degree=4,
-            in_degree=2,
-            out_degree=2,
-            bytes_sent=34000,
-            bytes_recv=12000,
-            fan_out_ratio=0.67,
-            pagerank=0.024,
-            risk_score=0.8,
-            is_suspicious=False,
-            containment_status=containment_map.get("93.184.216.34", "NORMAL"),
-        ),
-    ]
+    task_id = target_session["task_id"]
+    from ironclad.server.database import build_and_save_session_topology
+    topo_data = build_and_save_session_topology(task_id)
 
-    links = [
-        TopologyLink(source="192.168.1.50", target="192.168.1.1", weight=2400, packet_count=18, protocols=["UDP"], ports=[53], is_anomalous=False),
-        TopologyLink(source="192.168.1.50", target="93.184.216.34", weight=12500, packet_count=32, protocols=["TCP"], ports=[80], is_anomalous=False),
-        TopologyLink(source="10.0.0.99", target="192.168.1.50", weight=1200, packet_count=12, protocols=["TCP"], ports=[22, 80, 443, 8080], is_anomalous=True),
-        TopologyLink(source="10.0.0.99", target="192.168.1.88", weight=1400, packet_count=14, protocols=["TCP"], ports=[445, 3389, 1433], is_anomalous=True),
-        TopologyLink(source="192.168.1.88", target="198.51.100.77", weight=95400, packet_count=180, protocols=["TCP"], ports=[9443], is_anomalous=True),
-    ]
+    node_models = [TopologyNode(**n) for n in topo_data.get("nodes", [])]
+    link_models = [TopologyLink(**l) for l in topo_data.get("links", [])]
 
     return TopologyResponse(
-        nodes=nodes,
-        links=links,
-        total_nodes=len(nodes),
-        total_links=len(links),
+        session_id=task_id,
+        nodes=node_models,
+        links=link_models,
+        total_nodes=len(node_models),
+        total_links=len(link_models),
+        total_hosts=len(node_models),
+        total_connections=len(link_models),
+        suspicious_hosts=topo_data.get("suspicious_hosts", 0),
+        critical_hosts=topo_data.get("critical_hosts", 0),
     )
 
 
@@ -339,4 +287,206 @@ def get_analysis_status(task_id: str) -> AnalysisStatusResponse:
         total_flows=row["total_flows"],
         unique_hosts=row["unique_hosts"],
         executive_summary=row["executive_summary"],
+    )
+
+
+@router.get("/data-loss", response_model=DataLossResponse)
+def get_data_loss(session_id: Optional[str] = None) -> DataLossResponse:
+    """Retrieve verified and protocol-wise data loss metrics for a session."""
+    conn = get_db_connection()
+    target_session = None
+    if session_id:
+        cur = conn.execute("SELECT task_id FROM analysis_sessions WHERE task_id = ?", (session_id,))
+        target_session = cur.fetchone()
+        if not target_session:
+            return DataLossResponse(session_id=session_id)
+    else:
+        cur = conn.execute("SELECT task_id FROM analysis_sessions WHERE status = 'COMPLETED' ORDER BY id DESC LIMIT 1")
+        target_session = cur.fetchone()
+
+    if not target_session:
+        return DataLossResponse()
+
+    sid = target_session["task_id"]
+    from ironclad.server.database import get_session_data_loss
+    loss_data = get_session_data_loss(sid)
+    if not loss_data:
+        return DataLossResponse(session_id=sid)
+
+    return DataLossResponse(**loss_data)
+
+
+@router.get("/dynamic-thresholds", response_model=DynamicThresholdsResponse)
+def get_dynamic_thresholds(session_id: Optional[str] = None) -> DynamicThresholdsResponse:
+    """Retrieve statistical baselines, dynamic thresholds, and active anomaly flags."""
+    conn = get_db_connection()
+    from ironclad.stats.dynamic_thresholds import dynamic_threshold_manager
+
+    target_session = None
+    if session_id:
+        cur = conn.execute("SELECT task_id FROM analysis_sessions WHERE task_id = ?", (session_id,))
+        target_session = cur.fetchone()
+        if not target_session:
+            return DynamicThresholdsResponse(
+                session_id=session_id,
+                active_flags=[],
+                baselines=dynamic_threshold_manager.get_all_baselines(),
+                thresholds=dynamic_threshold_manager.get_all_thresholds(),
+                contamination_protection_active=dynamic_threshold_manager.contamination_protection_active,
+            )
+    else:
+        cur = conn.execute("SELECT task_id FROM analysis_sessions WHERE status = 'COMPLETED' ORDER BY id DESC LIMIT 1")
+        target_session = cur.fetchone()
+
+    sid = target_session["task_id"] if target_session else ""
+    from ironclad.server.database import get_session_dynamic_flags
+
+    active_flags = get_session_dynamic_flags(sid) if sid else []
+    baselines = dynamic_threshold_manager.get_all_baselines()
+    thresholds = dynamic_threshold_manager.get_all_thresholds()
+
+    return DynamicThresholdsResponse(
+        session_id=sid,
+        active_flags=active_flags,
+        baselines=baselines,
+        thresholds=thresholds,
+        contamination_protection_active=dynamic_threshold_manager.contamination_protection_active,
+    )
+
+
+@router.get("/traffic-rates", response_model=TrafficRatesResponse)
+def get_traffic_rates(session_id: Optional[str] = None) -> TrafficRatesResponse:
+    """Retrieve traffic throughput rates, velocity, and per-host breakdown."""
+    conn = get_db_connection()
+    target_session = None
+    if session_id:
+        cur = conn.execute("SELECT task_id FROM analysis_sessions WHERE task_id = ?", (session_id,))
+        target_session = cur.fetchone()
+        if not target_session:
+            return TrafficRatesResponse(session_id=session_id)
+    else:
+        cur = conn.execute("SELECT task_id FROM analysis_sessions WHERE status = 'COMPLETED' ORDER BY id DESC LIMIT 1")
+        target_session = cur.fetchone()
+
+    if not target_session:
+        return TrafficRatesResponse()
+
+    sid = target_session["task_id"]
+    from ironclad.server.database import get_session_traffic_rates
+    rate_data = get_session_traffic_rates(sid)
+    if not rate_data:
+        return TrafficRatesResponse(session_id=sid)
+
+    return TrafficRatesResponse(**rate_data)
+
+
+@router.get("/risk-factor", response_model=RiskFactorResponse)
+def get_risk_factor(session_id: Optional[str] = None) -> RiskFactorResponse:
+    """Retrieve transparent risk factor breakdown, engine contributions, and weights."""
+    conn = get_db_connection()
+    target_session = None
+    if session_id:
+        cur = conn.execute("SELECT * FROM analysis_sessions WHERE task_id = ?", (session_id,))
+        target_session = cur.fetchone()
+        if not target_session:
+            return RiskFactorResponse(session_id=session_id)
+    else:
+        cur = conn.execute("SELECT * FROM analysis_sessions WHERE status = 'COMPLETED' ORDER BY id DESC LIMIT 1")
+        target_session = cur.fetchone()
+
+    if not target_session:
+        return RiskFactorResponse()
+
+    sid = target_session["task_id"]
+    overall_risk = target_session["overall_risk_score"] or 0.0
+    classification = target_session["final_classification"] or "BENIGN"
+
+    # Sub-engines breakdown
+    cur_sub = conn.execute(
+        "SELECT * FROM subengine_evaluations WHERE session_id = ? ORDER BY subengine_id ASC",
+        (sid,)
+    )
+    subengines = []
+    for sr in cur_sub.fetchall():
+        subengines.append({
+            "subengine_id": sr["subengine_id"],
+            "name": sr["name"],
+            "parent_engine": sr["parent_engine"],
+            "risk_score": sr["risk_score"],
+            "confidence_score": sr["confidence_score"],
+            "status": sr["status"],
+            "explanation": sr["explanation"] or "",
+            "evidence": json.loads(sr["evidence_json"]) if sr["evidence_json"] else {},
+        })
+
+    # Primary engines
+    cur_eng = conn.execute("SELECT * FROM engine_evaluations WHERE session_id = ?", (sid,))
+    primary_signals = {}
+    for er in cur_eng.fetchall():
+        primary_signals[er["engine_id"]] = er["risk_score"]
+
+    from ironclad.server.database import get_session_data_loss, get_session_dynamic_flags
+    loss_data = get_session_data_loss(sid)
+    flags = get_session_dynamic_flags(sid)
+
+    # Determine contributions
+    data_loss_contribution = 0.0
+    if loss_data and loss_data.get("overall_loss_percentage") is not None:
+        lp = loss_data["overall_loss_percentage"]
+        if lp > 2.0:
+            data_loss_contribution = round((lp - 2.0) * 0.15 if lp <= 10.0 else 1.2 + min(1.3, (lp - 10.0) * 0.08), 2)
+
+    traffic_rate_contribution = 0.0
+    crit_flags = [f for f in flags if f.get("severity") in ("CRITICAL", "HIGH")]
+    if crit_flags:
+        traffic_rate_contribution = 1.0
+
+    # Multi-host calculation from topology_nodes
+    cur_nodes = conn.execute(
+        "SELECT COUNT(DISTINCT ip) as cnt, SUM(CASE WHEN is_suspicious = 1 OR risk_score >= 6.0 THEN 1 ELSE 0 END) as susp_cnt FROM topology_nodes WHERE session_id = ?",
+        (sid,)
+    )
+    node_row = cur_nodes.fetchone()
+    total_hosts = node_row["cnt"] if node_row else 0
+    susp_hosts = node_row["susp_cnt"] if node_row and node_row["susp_cnt"] else 0
+
+    multi_host_contribution = 0.0
+    # Classification band
+    from ironclad.engines.scoring import DEFAULT_SCORING_CONFIG
+    band = DEFAULT_SCORING_CONFIG.classify_score(overall_risk).value
+
+    explanation_steps = [
+        f"Base session overall risk evaluated at {overall_risk:.2f}/10 ({band}).",
+        f"Primary detection engines contributed: {', '.join([f'{k}: {v}' for k, v in primary_signals.items()]) or 'None'}.",
+    ]
+    if data_loss_contribution > 0:
+        explanation_steps.append(f"Data loss factor added +{data_loss_contribution} risk ({loss_data.get('overall_loss_percentage')} % loss observed).")
+    if traffic_rate_contribution > 0:
+        explanation_steps.append(f"Traffic velocity surge added +{traffic_rate_contribution} risk ({len(crit_flags)} rate anomaly flags).")
+
+    if susp_hosts and susp_hosts > 1:
+        multi_host_contribution = round(min(1.5, 0.4 * (susp_hosts - 1)), 2)
+        explanation_steps.append(f"Multi-host coordination factor added +{multi_host_contribution} risk ({susp_hosts} suspicious interacting nodes).")
+
+    # Cross corroboration: count how many primary engines have elevated risk (>= 4.0)
+    elevated_engines = [k for k, v in primary_signals.items() if (v or 0.0) >= 4.0]
+    cross_corroboration_delta = 0.0
+    if len(elevated_engines) >= 2:
+        cross_corroboration_delta = round(0.5 * (len(elevated_engines) - 1), 2)
+        explanation_steps.append(f"Cross-engine corroboration bonus +{cross_corroboration_delta} applied across engines: {', '.join(elevated_engines)}.")
+
+    return RiskFactorResponse(
+        session_id=sid,
+        overall_risk_score=overall_risk,
+        overall_confidence_score=85.0 if overall_risk > 0 else 50.0,
+        final_classification=classification,
+        classification_band=band,
+        primary_signals=primary_signals,
+        subengine_breakdown=subengines,
+        data_loss_contribution=data_loss_contribution,
+        traffic_rate_contribution=traffic_rate_contribution,
+        multi_host_contribution=multi_host_contribution,
+        cross_corroboration_delta=cross_corroboration_delta,
+        calculation_explanation=explanation_steps,
+        scoring_metadata={"session_id": sid, "flags_count": len(flags), "total_hosts": total_hosts, "suspicious_hosts": susp_hosts},
     )

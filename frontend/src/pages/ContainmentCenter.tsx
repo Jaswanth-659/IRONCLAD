@@ -1,11 +1,12 @@
-import React, { useState } from 'react'
-import { Shield, AlertTriangle } from 'lucide-react'
+import React, { useState, useEffect } from 'react'
+import { Shield, AlertTriangle, RefreshCw } from 'lucide-react'
 import { useApi } from '../hooks/useApi'
+import { useWebSocket } from '../hooks/useWebSocket'
 import RiskBadge from '../components/RiskBadge'
 import type { ContainmentHost, AuditLog } from '../types'
 
-interface HostsResponse { hosts: ContainmentHost[] }
-interface AuditResponse { logs: AuditLog[] }
+interface HostsResponse { hosts?: ContainmentHost[] }
+interface AuditResponse { logs?: AuditLog[] }
 
 interface ContainForm {
   operator: string
@@ -14,31 +15,43 @@ interface ContainForm {
 }
 
 export default function ContainmentCenter() {
-  const { data: hostsData, loading: hostsLoading, refetch: refetchHosts } = useApi<HostsResponse>('/api/containment/hosts')
-  const { data: logsData, loading: logsLoading, refetch: refetchLogs } = useApi<AuditResponse>('/api/containment/audit-log')
+  const { data: hostsData, loading: hostsLoading, refetch: refetchHosts } = useApi<HostsResponse | ContainmentHost[]>('/api/containment/hosts')
+  const { data: logsData, loading: logsLoading, refetch: refetchLogs } = useApi<AuditResponse | AuditLog[]>('/api/containment/audit-log')
+  const { lastMessage } = useWebSocket('ws://localhost:8000/ws')
 
   const [modalHost, setModalHost] = useState<ContainmentHost | null>(null)
   const [form, setForm] = useState<ContainForm>({ operator: 'SOC_Analyst', reason: '', notes: '' })
   const [submitting, setSubmitting] = useState(false)
   const [result, setResult] = useState<string | null>(null)
 
-  const hosts = hostsData?.hosts ?? []
-  const logs  = logsData?.logs  ?? []
+  useEffect(() => {
+    const t = String(lastMessage?.type ?? '').toUpperCase()
+    if (t === 'CONTAINMENT_UPDATE' || t === 'ANALYSIS_COMPLETED' || t === 'ANALYSIS_COMPLETE') {
+      void refetchHosts()
+      void refetchLogs()
+    }
+  }, [lastMessage, refetchHosts, refetchLogs])
+
+  const hosts: ContainmentHost[] = Array.isArray(hostsData) ? hostsData : (hostsData?.hosts ?? [])
+  const logs: AuditLog[] = Array.isArray(logsData) ? logsData : (logsData?.logs ?? [])
 
   const handleContain = async () => {
     if (!modalHost || !form.reason) return
     setSubmitting(true)
     setResult(null)
+    const hostIp = modalHost.ip_address || (modalHost as any).ip || ''
     try {
       const res = await fetch('/api/containment/simulate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ip_address: modalHost.ip_address,
-          operator:   form.operator,
-          reason:     form.reason,
-          notes:      form.notes,
-          session_id: 'demo-session-alpha-001',
+          ip: hostIp,
+          ip_address: hostIp,
+          action: 'ISOLATE',
+          operator: form.operator || 'SOC_Analyst',
+          reason: form.reason,
+          notes: form.notes || '',
+          session_id: 'manual-action',
         }),
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -55,18 +68,27 @@ export default function ContainmentCenter() {
 
   return (
     <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-lg font-semibold text-white">Containment Center</h1>
-        <p className="text-xs text-muted mt-0.5">
-          <span className="text-warning">⚠ SIMULATED CONTAINMENT ONLY</span>
-          {' '}— Actions are recorded for audit. No actual network isolation is performed.
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-semibold text-white">Containment Center</h1>
+          <p className="text-xs text-muted mt-0.5">
+            <span className="text-warning">⚠ SIMULATED CONTAINMENT ONLY</span>
+            {' '}— Actions are recorded for audit. No actual network isolation is performed.
+          </p>
+        </div>
+        <button
+          onClick={() => { void refetchHosts(); void refetchLogs() }}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-panel hover:bg-border text-xs text-gray-300 border border-border rounded transition-colors"
+        >
+          <RefreshCw size={12} />
+          Refresh
+        </button>
       </div>
 
       {/* Hosts */}
       <div className="bg-panel border border-border rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-border">
-          <h2 className="text-sm font-medium text-white">Monitored Hosts</h2>
+          <h2 className="text-sm font-medium text-white">Monitored Hosts ({hosts.length})</h2>
         </div>
         {hostsLoading && <div className="p-6 text-sm text-muted text-center">Loading…</div>}
         {!hostsLoading && (
@@ -79,32 +101,36 @@ export default function ContainmentCenter() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {hosts.map((host) => (
-                <tr key={host.id} className="hover:bg-white/5">
-                  <td className="px-4 py-3 font-mono text-white">{host.ip_address}</td>
-                  <td className="px-4 py-3 text-muted">{host.hostname || '—'}</td>
-                  <td className="px-4 py-3"><RiskBadge value={host.status} /></td>
-                  <td className="px-4 py-3">
-                    <span className={`font-bold font-mono ${host.risk_score >= 7 ? 'text-danger' : host.risk_score >= 5 ? 'text-warning' : 'text-success'}`}>
-                      {host.risk_score.toFixed(1)}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-muted">{host.containment_reason || '—'}</td>
-                  <td className="px-4 py-3">
-                    {host.status !== 'CONTAINED' && (
-                      <button
-                        onClick={() => setModalHost(host)}
-                        className="flex items-center gap-1.5 px-2.5 py-1 bg-danger/15 hover:bg-danger/25 text-danger border border-danger/30 rounded text-xs font-medium transition-colors"
-                      >
-                        <Shield size={11} /> Simulate Containment
-                      </button>
-                    )}
-                    {host.status === 'CONTAINED' && (
-                      <span className="text-xs text-muted">Contained by {host.contained_by}</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {hosts.map((host, idx) => {
+                const hostIp = host.ip_address || (host as any).ip || 'Unknown'
+                const riskVal = typeof host.risk_score === 'number' && !isNaN(host.risk_score) ? host.risk_score : 0.0
+                return (
+                  <tr key={host.id || hostIp || idx} className="hover:bg-white/5">
+                    <td className="px-4 py-3 font-mono text-white">{hostIp}</td>
+                    <td className="px-4 py-3 text-muted">{host.hostname || '—'}</td>
+                    <td className="px-4 py-3"><RiskBadge value={host.status || 'NORMAL'} /></td>
+                    <td className="px-4 py-3">
+                      <span className={`font-bold font-mono ${riskVal >= 7 ? 'text-danger' : riskVal >= 5 ? 'text-warning' : 'text-success'}`}>
+                        {riskVal.toFixed(1)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-muted">{host.containment_reason || (host as any).reason || '—'}</td>
+                    <td className="px-4 py-3">
+                      {host.status !== 'CONTAINED' && host.status !== 'ISOLATED' && (
+                        <button
+                          onClick={() => setModalHost(host)}
+                          className="flex items-center gap-1.5 px-2.5 py-1 bg-danger/15 hover:bg-danger/25 text-danger border border-danger/30 rounded text-xs font-medium transition-colors"
+                        >
+                          <Shield size={11} /> Simulate Containment
+                        </button>
+                      )}
+                      {(host.status === 'CONTAINED' || host.status === 'ISOLATED') && (
+                        <span className="text-xs text-muted">Contained by {host.contained_by || (host as any).operator || 'SOC_Analyst'}</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
               {hosts.length === 0 && (
                 <tr><td colSpan={6} className="px-4 py-8 text-center text-muted">No monitored hosts.</td></tr>
               )}
@@ -117,7 +143,7 @@ export default function ContainmentCenter() {
       <div className="bg-panel border border-border rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b border-border flex items-center gap-2">
           <AlertTriangle size={13} className="text-warning" />
-          <h2 className="text-sm font-medium text-white">Audit Log</h2>
+          <h2 className="text-sm font-medium text-white">Audit Log ({logs.length})</h2>
         </div>
         {logsLoading && <div className="p-6 text-sm text-muted text-center">Loading…</div>}
         {!logsLoading && (
@@ -130,15 +156,23 @@ export default function ContainmentCenter() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {logs.map((log) => (
-                <tr key={log.id} className="hover:bg-white/5">
-                  <td className="px-4 py-2.5 font-mono text-muted whitespace-nowrap">{new Date(log.timestamp).toLocaleString()}</td>
-                  <td className="px-4 py-2.5 text-white">{log.operator}</td>
-                  <td className="px-4 py-2.5"><RiskBadge value={log.action} /></td>
-                  <td className="px-4 py-2.5 font-mono text-white">{log.target}</td>
-                  <td className="px-4 py-2.5 text-muted">{log.details}</td>
-                </tr>
-              ))}
+              {logs.map((log, idx) => {
+                const logTarget = log.target || (log as any).target_entity || '—'
+                const logDetails = typeof log.details === 'object' && log.details !== null
+                  ? JSON.stringify(log.details)
+                  : String(log.details || (log as any).details_text || '—')
+                return (
+                  <tr key={log.id || idx} className="hover:bg-white/5">
+                    <td className="px-4 py-2.5 font-mono text-muted whitespace-nowrap">
+                      {log.timestamp ? new Date(log.timestamp).toLocaleString() : '—'}
+                    </td>
+                    <td className="px-4 py-2.5 text-white">{log.operator || 'SOC_Operator'}</td>
+                    <td className="px-4 py-2.5"><RiskBadge value={log.action || 'INFO'} /></td>
+                    <td className="px-4 py-2.5 font-mono text-white">{logTarget}</td>
+                    <td className="px-4 py-2.5 text-muted max-w-xs truncate">{logDetails}</td>
+                  </tr>
+                )
+              })}
               {logs.length === 0 && (
                 <tr><td colSpan={5} className="px-4 py-8 text-center text-muted">No audit events yet.</td></tr>
               )}

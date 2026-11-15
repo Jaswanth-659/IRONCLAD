@@ -1,5 +1,6 @@
 import React from 'react'
-import { Activity, AlertTriangle, Layers, Users, TrendingUp } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Activity, AlertTriangle, Layers, Users, TrendingUp, ShieldAlert, ArrowRight, Gauge } from 'lucide-react'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis,
   CartesianGrid, Tooltip, ResponsiveContainer, Cell,
@@ -9,6 +10,7 @@ import { useWebSocket } from '../hooks/useWebSocket'
 import MetricCard from '../components/MetricCard'
 import RiskBadge from '../components/RiskBadge'
 import PcapUpload from '../components/PcapUpload'
+import type { DataLossReport } from '../types'
 
 // Match actual OverviewStats Pydantic model field names
 interface OverviewStatsActual {
@@ -29,11 +31,21 @@ interface OverviewStatsActual {
 
 export default function Overview() {
   const { data, loading, refetch } = useApi<OverviewStatsActual>('/api/overview')
+  const { data: lossData, refetch: refetchLoss } = useApi<DataLossReport>('/api/data-loss')
   const { lastMessage } = useWebSocket('ws://localhost:8000/ws')
 
   React.useEffect(() => {
-    if (lastMessage?.type === 'analysis_complete') void refetch()
-  }, [lastMessage, refetch])
+    const t = String(lastMessage?.type ?? '').toUpperCase()
+    if (t === 'ANALYSIS_COMPLETED' || t === 'ANALYSIS_COMPLETE') {
+      void refetch()
+      void refetchLoss()
+    }
+  }, [lastMessage, refetch, refetchLoss])
+
+  const handleUploadComplete = () => {
+    void refetch()
+    void refetchLoss()
+  }
 
   if (loading || !data) {
     return <div className="flex items-center justify-center h-64 text-muted text-sm">Loading telemetry…</div>
@@ -60,7 +72,7 @@ export default function Overview() {
       </div>
 
       {/* PCAP Upload */}
-      <PcapUpload onComplete={refetch} />
+      <PcapUpload onComplete={handleUploadComplete} />
 
       {/* Metric Cards */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
@@ -72,6 +84,53 @@ export default function Overview() {
           data.overall_risk_score >= 7 ? 'text-danger' : data.overall_risk_score >= 5 ? 'text-warning' : 'text-success'
         } />
       </div>
+
+      {/* Telemetry & Transmission Integrity Quick Summary */}
+      {lossData && (
+        <div className="bg-panel border border-border rounded-lg p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className={`w-10 h-10 rounded flex items-center justify-center ${
+              (lossData.overall_loss_percentage || 0) > 2 ? 'bg-danger/20 text-danger' : 'bg-accent/20 text-accent'
+            }`}>
+              {(lossData.overall_loss_percentage || 0) > 2 ? <ShieldAlert size={20} /> : <Gauge size={20} />}
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-white">Transmission Integrity & Data Loss</span>
+                <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                  lossData.measurement_status === 'CONFIRMED'
+                    ? 'bg-blue-500/20 text-blue-400'
+                    : lossData.measurement_status === 'INFERRED'
+                    ? 'bg-amber-500/20 text-amber-400'
+                    : 'bg-gray-500/20 text-gray-400'
+                }`}>
+                  {lossData.measurement_status}
+                </span>
+              </div>
+              <p className="text-xs text-muted mt-0.5">
+                Packets Received: <span className="text-white font-mono">{lossData.total_packets_received.toLocaleString()}</span> · Loss Ratio:{' '}
+                <span className={`font-mono font-semibold ${
+                  (lossData.overall_loss_percentage || 0) > 2 ? 'text-danger' : 'text-success'
+                }`}>
+                  {lossData.overall_loss_percentage !== null && lossData.overall_loss_percentage !== undefined
+                    ? `${lossData.overall_loss_percentage.toFixed(2)}%`
+                    : 'Clean / None'}
+                </span>
+                {lossData.total_packets_lost !== null && lossData.total_packets_lost !== undefined && (
+                  <span className="text-muted ml-2">({lossData.total_packets_lost.toLocaleString()} lost)</span>
+                )}
+              </p>
+            </div>
+          </div>
+          <Link
+            to="/telemetry"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-border rounded text-xs text-white transition-colors self-start md:self-auto"
+          >
+            <span>Inspect Telemetry & Baselines</span>
+            <ArrowRight size={13} className="text-accent" />
+          </Link>
+        </div>
+      )}
 
       {/* Charts */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

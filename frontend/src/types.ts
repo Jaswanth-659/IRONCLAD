@@ -93,20 +93,61 @@ export interface ThreatIndicator {
 
 export interface TopologyNode {
   id: string
-  label: string
   ip: string
+  label: string
+  hostname?: string | null
+  role: string
   node_type: string
+  is_internal: boolean
   risk_score: number
+  classification: string
+  is_suspicious: boolean
+  degree: number
+  in_degree: number
+  out_degree: number
+  bytes_sent: number
+  bytes_recv: number
   total_bytes: number
+  packets_sent: number
+  packets_recv: number
   total_packets: number
+  fan_out_ratio: number
+  pagerank: number
+  containment_status: string
+  protocols: string[]
+  connected_hosts: string[]
+  subengine_alerts: string[]
+  incident_count: number
 }
 
 export interface TopologyLink {
   source: string
   target: string
   bytes: number
+  weight: number
   packets: number
+  packet_count: number
+  protocol: string
+  protocols: string[]
+  src_ports: number[]
+  dst_ports: number[]
+  ports: number[]
+  is_anomalous: boolean
   risk_score: number
+  direction: string
+  session_id?: string | null
+}
+
+export interface TopologyResponse {
+  session_id: string
+  nodes: TopologyNode[]
+  links: TopologyLink[]
+  total_nodes: number
+  total_links: number
+  total_hosts: number
+  total_connections: number
+  suspicious_hosts: number
+  critical_hosts: number
 }
 
 export interface ContainmentHost {
@@ -128,4 +169,127 @@ export interface AuditLog {
   target: string
   details: string
   session_id: string
+}
+
+export interface ProtocolDataLoss {
+  protocol: string
+  packets_observed: number
+  expected_packets: number | null
+  lost_packets: number | null
+  retransmissions: number
+  sequence_gaps: number
+  duplicate_acks: number
+  loss_percentage: number | null
+  total_bytes: number
+  pps: number
+  bps: number
+  measurement_status: 'CONFIRMED' | 'INFERRED' | 'ESTIMATED' | 'UNAVAILABLE'
+  associated_anomalies: string[]
+}
+
+export interface DataLossReport {
+  session_id: string
+  total_packets_expected: number | null
+  total_packets_received: number
+  total_packets_lost: number | null
+  overall_loss_percentage: number | null
+  data_volume_expected_bytes: number | null
+  data_volume_received_bytes: number
+  estimated_missing_bytes: number
+  measurement_status: 'CONFIRMED' | 'INFERRED' | 'ESTIMATED' | 'UNAVAILABLE'
+  protocols: Record<string, ProtocolDataLoss>
+  timeline_loss_trend: Array<{
+    timestamp: number
+    packets_received: number
+    bytes: number
+    retransmissions: number
+    lost_packets: number
+    loss_percentage: number | null
+  }>
+  data_loss_alerts: Array<{
+    severity: string
+    protocol: string
+    metric: string
+    observed: number
+    loss_percentage: number
+    message: string
+  }>
+}
+
+export interface DynamicAnomalyFlagItem {
+  anomaly_category: string
+  observed_value: number
+  expected_baseline: number
+  current_threshold: number
+  deviation_percentage: number
+  severity: 'NORMAL' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+  confidence: number
+  detection_explanation: string
+  associated_host: string
+  timestamp: number
+  protocol: string
+  metadata?: Record<string, unknown>
+}
+
+export interface DynamicThresholdsData {
+  session_id: string
+  active_flags: DynamicAnomalyFlagItem[]
+  baselines: Record<string, Record<string, number>>
+  thresholds: Record<string, Record<string, number>>
+  contamination_protection_active: boolean
+}
+
+export interface HostRateMetrics {
+  host_ip: string
+  packets_in: number
+  packets_out: number
+  bytes_in: number
+  bytes_out: number
+  total_packets: number
+  total_bytes: number
+  pps: number
+  bps: number
+  inbound_pps: number
+  outbound_pps: number
+  inbound_bps: number
+  outbound_bps: number
+  active_anomaly: string | null
+}
+
+export interface TrafficRatesData {
+  session_id: string
+  duration_seconds: number
+  total_packets: number
+  total_bytes: number
+  overall_pps: number
+  overall_bps: number
+  inbound_pps: number
+  outbound_pps: number
+  inbound_bps: number
+  outbound_bps: number
+  protocol_rates: Record<string, { packets: number; bytes: number; pps: number; bps: number }>
+  host_rates: HostRateMetrics[]
+  rate_timeline: Array<{
+    timestamp: number
+    total_pps: number
+    total_bps: number
+    inbound_pps: number
+    outbound_pps: number
+  }>
+}
+
+export interface RiskFactorData {
+  session_id: string
+  overall_risk_score: number
+  overall_confidence_score: number
+  final_classification: string
+  classification_band: string
+  primary_signals: Record<string, number>
+  subengine_breakdown: SubEngineDetail[]
+  data_loss_contribution: number
+  traffic_rate_contribution: number
+  multi_host_contribution: number
+  cross_corroboration_delta: number
+  calculation_explanation: string[]
+  scoring_metadata: Record<string, unknown>
 }

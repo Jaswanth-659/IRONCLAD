@@ -2,11 +2,12 @@ import React from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   LayoutDashboard, Cpu, Search, Shield,
-  Network, AlertTriangle, Lock,
+  Network, AlertTriangle, Lock, Gauge,
 } from 'lucide-react'
 
 const NAV = [
   { to: '/', icon: LayoutDashboard, label: 'Overview' },
+  { to: '/telemetry', icon: Gauge, label: 'Data Loss & Rates' },
   { to: '/engines', icon: Cpu, label: 'Detection Engines' },
   { to: '/sub-engines', icon: Search, label: 'Sub-Engines' },
   { to: '/threat-intel', icon: Shield, label: 'Threat Intel' },

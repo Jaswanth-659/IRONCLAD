@@ -23,6 +23,7 @@ from scapy.all import (
 )
 
 from ironclad.core.exceptions import PacketParsingError
+from ironclad.core.ip_validation import validate_ipv4
 from ironclad.core.logging import get_logger
 from ironclad.core.types import PacketSummary, Protocol
 from ironclad.parsing.protocols import parse_tcp_flags
@@ -94,8 +95,17 @@ class PacketDissector:
 
             if IP in pkt:
                 ip_layer = pkt[IP]
-                src_ip = ip_layer.src
-                dst_ip = ip_layer.dst
+                raw_src = str(ip_layer.src)
+                raw_dst = str(ip_layer.dst)
+
+                src_val = validate_ipv4(raw_src)
+                dst_val = validate_ipv4(raw_dst)
+                if not src_val.is_valid or not dst_val.is_valid:
+                    logger.debug("Discarding packet #%d with malformed IPv4 endpoints: src='%s' dst='%s'", index, raw_src, raw_dst)
+                    return None
+
+                src_ip = src_val.normalized_ip or raw_src
+                dst_ip = dst_val.normalized_ip or raw_dst
                 proto_val = int(ip_layer.proto)
                 proto_enum = Protocol.from_int(proto_val)
                 proto_name = proto_enum.name

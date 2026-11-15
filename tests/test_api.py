@@ -251,3 +251,84 @@ class TestUpload:
     def test_pcap_upload_no_file_422(self, client: TestClient):
         resp = client.post("/api/upload/pcap")
         assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Telemetry Center & Dynamic Thresholds (P0 Stability)
+# ---------------------------------------------------------------------------
+
+class TestTelemetryCenter:
+
+    def test_dynamic_thresholds_200(self, client: TestClient):
+        resp = client.get("/api/dynamic-thresholds")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "baselines" in data
+        assert "thresholds" in data
+        assert data.get("contamination_protection_active") is True
+        # Verify all 12 categories are present in baselines and thresholds
+        assert len(data["baselines"]) == 12
+        assert len(data["thresholds"]) == 12
+
+    def test_data_loss_200(self, client: TestClient):
+        resp = client.get("/api/data-loss")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "measurement_status" in data
+        assert "protocols" in data
+
+    def test_traffic_rates_200(self, client: TestClient):
+        resp = client.get("/api/traffic-rates")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "overall_pps" in data
+        assert "overall_bps" in data
+
+    def test_risk_factor_200(self, client: TestClient):
+        resp = client.get("/api/risk-factor")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "overall_risk_score" in data
+        assert "calculation_explanation" in data
+        assert "multi_host_contribution" in data
+        assert "cross_corroboration_delta" in data
+
+    def test_session_isolation_no_bleeding(self, client: TestClient):
+        """Querying a non-existent session must return empty data for that session, NOT bleed other session data."""
+        resp = client.get("/api/dynamic-thresholds?session_id=non-existent-session-xyz")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["session_id"] == "non-existent-session-xyz"
+        assert len(data["active_flags"]) == 0
+
+        resp_loss = client.get("/api/data-loss?session_id=non-existent-session-xyz")
+        assert resp_loss.status_code == 200
+        data_loss = resp_loss.json()
+        assert data_loss["session_id"] == "non-existent-session-xyz"
+        assert data_loss["total_packets_received"] == 0
+
+    def test_containment_hosts_have_risk_score(self, client: TestClient):
+        """Host items must contain numeric risk_score to prevent .toFixed crash."""
+        resp = client.get("/api/containment/hosts")
+        assert resp.status_code == 200
+        hosts = resp.json()
+        assert isinstance(hosts, list)
+        for h in hosts:
+            assert "risk_score" in h
+            assert isinstance(h["risk_score"], (int, float))
+            assert "ip" in h
+
+    def test_simulate_containment_with_ip_address_alias(self, client: TestClient):
+        """Simulate endpoint accepts 'ip_address' as sent by frontend modal."""
+        resp = client.post("/api/containment/simulate", json={
+            "ip_address": "192.168.1.50",
+            "action": "ISOLATE",
+            "operator": "test_analyst",
+            "reason": "Suspicious exfiltration detected",
+            "notes": "Automated test",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["success"] is True
+        assert data["simulated"] is True
+

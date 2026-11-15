@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Set
 
+from ironclad.core.ip_validation import validate_ipv4
 from ironclad.core.types import FlowRecord, GraphNodeMetrics
 from ironclad.engines.base import BaseSubEngine, DetectionStatus, SubEngineResult
 
@@ -94,7 +95,11 @@ class ThreatIntelChecker(BaseSubEngine):
             src = flow.key.src_ip
             dst = flow.key.dst_ip
 
-            for ip, role in [(src, "SOURCE"), (dst, "DESTINATION")]:
+            for raw_ip, role in [(src, "SOURCE"), (dst, "DESTINATION")]:
+                val = validate_ipv4(raw_ip)
+                if not val.is_valid:
+                    continue
+                ip = val.normalized_ip or raw_ip
                 if ip in checked_ips:
                     continue
                 checked_ips.add(ip)

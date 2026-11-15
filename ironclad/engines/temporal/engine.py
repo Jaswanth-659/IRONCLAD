@@ -21,6 +21,12 @@ from ironclad.engines.base import (
     DetectionStatus,
     EscalationLevel,
     PrimaryEngineResult,
+    RiskClassificationBand,
+)
+from ironclad.engines.scoring import (
+    DEFAULT_SCORING_CONFIG,
+    ScoringConfig,
+    aggregate_primary_engine_scores,
 )
 from ironclad.engines.temporal.burst_pattern import BurstPatternAnalyzer
 from ironclad.engines.temporal.historical import HistoricalBehaviourComparator
@@ -31,11 +37,14 @@ from ironclad.engines.temporal.periodicity import PeriodicityValidator
 class TemporalBehaviourEngine(BasePrimaryEngine):
     """Primary Detection Engine 1: Evaluates timing, beaconing, and burst regularities."""
 
-    def __init__(self) -> None:
+    EXPECTED_SUBENGINES = ["E1.1", "E1.2", "E1.3", "E1.4"]
+
+    def __init__(self, scoring_config: Optional[ScoringConfig] = None) -> None:
         super().__init__(
             engine_id="ENGINE_1_TEMPORAL",
             name="Temporal Behaviour Engine",
         )
+        self.scoring_config = scoring_config or DEFAULT_SCORING_CONFIG
         self.periodicity_sub = PeriodicityValidator()
         self.jitter_sub = JitterAnalyzer()
         self.burst_sub = BurstPatternAnalyzer()
@@ -62,32 +71,16 @@ class TemporalBehaviourEngine(BasePrimaryEngine):
             self.historical_sub.analyze(flows, host_metrics, context),
         ]
 
-        # Primary risk synthesis: Non-linear max-impact weighted aggregation
-        sub_scores = [r.risk_score for r in sub_results]
-        max_sub = max(sub_scores) if sub_scores else 0.0
-        mean_sub = sum(sub_scores) / len(sub_scores) if sub_scores else 0.0
-
-        # Weighted risk prioritizing worst anomaly while accounting for general baseline
-        composite_risk = (0.75 * max_sub) + (0.25 * mean_sub)
-        primary_risk = round(min(10.0, max(0.0, composite_risk)), 2)
-
-        # Average confidence
-        confidence = round(
-            sum(r.confidence_score for r in sub_results) / len(sub_results)
-            if sub_results else 50.0,
-            1
+        # Mathematically corrected, non-dilutive, credibility-weighted aggregation
+        agg = aggregate_primary_engine_scores(
+            engine_id=self.engine_id,
+            engine_name=self.name,
+            subengine_results=sub_results,
+            expected_ids=self.EXPECTED_SUBENGINES,
+            config=self.scoring_config,
         )
 
-        escalation = EscalationLevel.from_score(primary_risk)
-        triggered_secondary = escalation != EscalationLevel.NORMAL
-
-        # Overall detection status
-        if primary_risk >= 7.0:
-            status = DetectionStatus.CRITICAL
-        elif primary_risk >= 5.0:
-            status = DetectionStatus.SUSPICIOUS
-        else:
-            status = DetectionStatus.NORMAL
+        triggered_secondary = agg.escalation != EscalationLevel.NORMAL
 
         # Synthesize forensic explanation
         active_sub_findings = [r.explanation for r in sub_results if r.risk_score >= 4.5]
@@ -101,20 +94,31 @@ class TemporalBehaviourEngine(BasePrimaryEngine):
 
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
+        # Build evidence package with full scoring transparency
+        evidence_pkg = {
+            "max_subengine_score": max((r.risk_score for r in sub_results), default=0.0),
+            "mean_subengine_score": round(sum(r.risk_score for r in sub_results) / len(sub_results), 2) if sub_results else 0.0,
+            "subengine_count": len(sub_results),
+            "scoring_metadata": agg.scoring_metadata,
+            "calculation_explanation": agg.calculation_explanation,
+        }
+
         return PrimaryEngineResult(
             engine_id=self.engine_id,
             name=self.name,
-            risk_score=primary_risk,
-            confidence_score=confidence,
+            risk_score=agg.aggregated_risk_score,
+            confidence_score=agg.aggregated_confidence,
             explanation=explanation,
-            evidence={
-                "max_subengine_score": max_sub,
-                "mean_subengine_score": round(mean_sub, 2),
-                "subengine_count": len(sub_results),
-            },
-            status=status,
-            escalation=escalation,
+            evidence=evidence_pkg,
+            status=agg.status,
+            escalation=agg.escalation,
             subengine_results=sub_results,
             secondary_investigation_triggered=triggered_secondary,
             execution_time_ms=round(elapsed_ms, 2),
+            classification=agg.classification,
+            contributing_subengines=agg.contributing_subengines,
+            valid_subengine_count=agg.valid_subengine_count,
+            unavailable_subengine_count=agg.unavailable_subengine_count,
+            calculation_explanation=agg.calculation_explanation,
+            scoring_metadata=agg.scoring_metadata,
         )

@@ -17,10 +17,18 @@ from ironclad.engines.base import (
     EscalationLevel,
     FinalClassification,
     PrimaryEngineResult,
+    RiskClassificationBand,
     SubEngineResult,
 )
 from ironclad.engines.connection import ConnectionBehaviourEngine
 from ironclad.engines.decision import DecisionCorrelationEngine
+from ironclad.engines.scoring import (
+    DEFAULT_SCORING_CONFIG,
+    ScoringConfig,
+    aggregate_engine4_final_decision,
+    aggregate_primary_engine_scores,
+    audit_subengine_results,
+)
 from ironclad.engines.temporal import TemporalBehaviourEngine
 from ironclad.engines.traffic import TrafficBehaviourEngine
 
@@ -28,6 +36,7 @@ __all__ = [
     "EscalationLevel",
     "DetectionStatus",
     "FinalClassification",
+    "RiskClassificationBand",
     "SubEngineResult",
     "PrimaryEngineResult",
     "CorrelationItem",
@@ -38,4 +47,9 @@ __all__ = [
     "TrafficBehaviourEngine",
     "ConnectionBehaviourEngine",
     "DecisionCorrelationEngine",
+    "ScoringConfig",
+    "DEFAULT_SCORING_CONFIG",
+    "aggregate_primary_engine_scores",
+    "aggregate_engine4_final_decision",
+    "audit_subengine_results",
 ]

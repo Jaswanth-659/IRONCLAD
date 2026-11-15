@@ -74,35 +74,61 @@ class ThreatIntelResponse(BaseModel):
 
 class TopologyNode(BaseModel):
     id: str
-    label: str
-    role: str
+    ip: str = ""
+    label: str = ""
+    hostname: Optional[str] = None
+    role: str = "HOST"
+    node_type: str = "HOST"
+    is_internal: bool = True
+    risk_score: float = 0.0
+    classification: str = "NORMAL"
+    is_suspicious: bool = False
     degree: int = 0
     in_degree: int = 0
     out_degree: int = 0
     bytes_sent: int = 0
     bytes_recv: int = 0
+    total_bytes: int = 0
+    packets_sent: int = 0
+    packets_recv: int = 0
+    total_packets: int = 0
     fan_out_ratio: float = 0.0
     pagerank: float = 0.0
-    risk_score: float = 0.0
-    is_suspicious: bool = False
     containment_status: str = "NORMAL"
+    protocols: List[str] = Field(default_factory=list)
+    connected_hosts: List[str] = Field(default_factory=list)
+    subengine_alerts: List[str] = Field(default_factory=list)
+    incident_count: int = 0
 
 
 class TopologyLink(BaseModel):
     source: str
     target: str
+    bytes: int = 0
     weight: int = 0
+    packets: int = 0
     packet_count: int = 0
+    protocol: str = "TCP"
     protocols: List[str] = Field(default_factory=list)
+    src_ports: List[int] = Field(default_factory=list)
+    dst_ports: List[int] = Field(default_factory=list)
     ports: List[int] = Field(default_factory=list)
     is_anomalous: bool = False
+    risk_score: float = 0.0
+    direction: str = "outbound"
+    session_id: Optional[str] = None
 
 
 class TopologyResponse(BaseModel):
-    nodes: List[TopologyNode]
-    links: List[TopologyLink]
-    total_nodes: int
-    total_links: int
+    session_id: str = ""
+    nodes: List[TopologyNode] = Field(default_factory=list)
+    links: List[TopologyLink] = Field(default_factory=list)
+    total_nodes: int = 0
+    total_links: int = 0
+    total_hosts: int = 0
+    total_connections: int = 0
+    suspicious_hosts: int = 0
+    critical_hosts: int = 0
 
 
 class IncidentItem(BaseModel):
@@ -138,16 +164,23 @@ class IncidentDetailResponse(BaseModel):
 
 
 class ContainmentActionRequest(BaseModel):
-    ip: str
-    action: str = Field(description="ISOLATE, QUARANTINE, or RELEASE")
+    ip: Optional[str] = None
+    ip_address: Optional[str] = None
+    action: str = Field(default="ISOLATE", description="ISOLATE, QUARANTINE, or RELEASE")
     operator: str = "SOC_ANALYST"
-    reason: str
+    reason: str = ""
     notes: Optional[str] = ""
+    session_id: Optional[str] = None
 
 
 class HostStatusItem(BaseModel):
     ip: str
+    ip_address: Optional[str] = None
+    hostname: Optional[str] = None
     status: str
+    risk_score: float = 0.0
+    containment_reason: Optional[str] = None
+    contained_by: Optional[str] = None
     contained_at: Optional[str] = None
     released_at: Optional[str] = None
     operator: Optional[str] = None
@@ -161,8 +194,10 @@ class AuditLogItem(BaseModel):
     operator: str
     action: str
     target_entity: str
-    details: Dict[str, Any] = Field(default_factory=dict)
-    result: str
+    target: Optional[str] = None
+    details: Any = Field(default_factory=dict)
+    details_text: Optional[str] = None
+    result: str = "SUCCESS"
 
 
 class UploadResponse(BaseModel):
@@ -184,3 +219,58 @@ class AnalysisStatusResponse(BaseModel):
     total_flows: Optional[int] = None
     unique_hosts: Optional[int] = None
     executive_summary: Optional[str] = None
+
+
+class DataLossResponse(BaseModel):
+    session_id: str = ""
+    total_packets_expected: Optional[int] = None
+    total_packets_received: int = 0
+    total_packets_lost: Optional[int] = None
+    overall_loss_percentage: Optional[float] = None
+    data_volume_expected_bytes: Optional[int] = None
+    data_volume_received_bytes: int = 0
+    estimated_missing_bytes: int = 0
+    measurement_status: str = "UNAVAILABLE"
+    protocols: Dict[str, Any] = Field(default_factory=dict)
+    timeline_loss_trend: List[Dict[str, Any]] = Field(default_factory=list)
+    data_loss_alerts: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class DynamicThresholdsResponse(BaseModel):
+    session_id: str = ""
+    active_flags: List[Dict[str, Any]] = Field(default_factory=list)
+    baselines: Dict[str, Any] = Field(default_factory=dict)
+    thresholds: Dict[str, Any] = Field(default_factory=dict)
+    contamination_protection_active: bool = True
+
+
+class TrafficRatesResponse(BaseModel):
+    session_id: str = ""
+    duration_seconds: float = 0.0
+    total_packets: int = 0
+    total_bytes: int = 0
+    overall_pps: float = 0.0
+    overall_bps: float = 0.0
+    inbound_pps: float = 0.0
+    outbound_pps: float = 0.0
+    inbound_bps: float = 0.0
+    outbound_bps: float = 0.0
+    protocol_rates: Dict[str, Any] = Field(default_factory=dict)
+    host_rates: List[Dict[str, Any]] = Field(default_factory=list)
+    rate_timeline: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class RiskFactorResponse(BaseModel):
+    session_id: str = ""
+    overall_risk_score: float = 0.0
+    overall_confidence_score: float = 0.0
+    final_classification: str = "BENIGN"
+    classification_band: str = "LOW"
+    primary_signals: Dict[str, float] = Field(default_factory=dict)
+    subengine_breakdown: List[Dict[str, Any]] = Field(default_factory=list)
+    data_loss_contribution: float = 0.0
+    traffic_rate_contribution: float = 0.0
+    multi_host_contribution: float = 0.0
+    cross_corroboration_delta: float = 0.0
+    calculation_explanation: List[str] = Field(default_factory=list)
+    scoring_metadata: Dict[str, Any] = Field(default_factory=dict)

@@ -31,6 +31,22 @@ class EscalationLevel(str, Enum):
         return cls.NORMAL
 
 
+class RiskClassificationBand(str, Enum):
+    """
+    Standardized operational risk classification bands:
+    - 0.0–2.9: NORMAL
+    - 3.0–4.9: LOW RISK
+    - 5.0–6.9: SUSPICIOUS
+    - 7.0–8.9: HIGH RISK
+    - 9.0–10.0: CRITICAL
+    """
+    NORMAL = "NORMAL"
+    LOW_RISK = "LOW_RISK"
+    SUSPICIOUS = "SUSPICIOUS"
+    HIGH_RISK = "HIGH_RISK"
+    CRITICAL = "CRITICAL"
+
+
 class DetectionStatus(str, Enum):
     """Detection outcome status."""
     NORMAL = "NORMAL"
@@ -74,6 +90,13 @@ class PrimaryEngineResult:
     subengine_results: List[SubEngineResult] = field(default_factory=list)
     secondary_investigation_triggered: bool = False
     execution_time_ms: float = 0.0
+    # Enhanced scoring metadata & transparency fields:
+    classification: RiskClassificationBand = RiskClassificationBand.NORMAL
+    contributing_subengines: List[str] = field(default_factory=list)
+    valid_subengine_count: int = 0
+    unavailable_subengine_count: int = 0
+    calculation_explanation: str = ""
+    scoring_metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -98,6 +121,13 @@ class DecisionReport:
     evidence_quality_score: float      # [0.0 - 100.0%]
     recommended_actions: List[str]
     timeline_events: List[Dict[str, Any]] = field(default_factory=list)
+    # Enhanced scoring metadata & transparency fields:
+    overall_confidence_score: float = 0.0
+    classification_band: RiskClassificationBand = RiskClassificationBand.NORMAL
+    contributing_engines: List[str] = field(default_factory=list)
+    unavailable_engine_count: int = 0
+    calculation_explanation: str = ""
+    scoring_metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 class BaseSubEngine(ABC):

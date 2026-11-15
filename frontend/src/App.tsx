@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar'
 import Header from './components/Header'
 
 import Overview           from './pages/Overview'
+import TelemetryCenter    from './pages/TelemetryCenter'
 import DetectionEngines   from './pages/DetectionEngines'
 import SubEngines         from './pages/SubEngines'
 import ThreatIntelligence from './pages/ThreatIntelligence'
@@ -22,6 +23,7 @@ export default function App() {
           <main className="flex-1 overflow-y-auto">
             <Routes>
               <Route path="/"                  element={<Overview />} />
+              <Route path="/telemetry"         element={<TelemetryCenter />} />
               <Route path="/engines"           element={<DetectionEngines />} />
               <Route path="/sub-engines"       element={<SubEngines />} />
               <Route path="/threat-intel"      element={<ThreatIntelligence />} />

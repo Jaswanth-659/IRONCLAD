@@ -12,6 +12,7 @@ from typing import Dict, Iterable, List, Optional, Set
 import networkx as nx
 
 from ironclad.core.exceptions import GraphConstructionError
+from ironclad.core.ip_validation import validate_ipv4
 from ironclad.core.logging import get_logger
 from ironclad.core.types import FlowRecord, PacketSummary
 
@@ -35,9 +36,9 @@ class NetworkGraphBuilder:
         if not src or not dst:
             return
 
-        # Ensure nodes exist
-        self._ensure_node(src)
-        self._ensure_node(dst)
+        # Ensure nodes exist and are valid IPv4 addresses
+        if not self._ensure_node(src) or not self._ensure_node(dst):
+            return
 
         # Update node byte/packet counters
         self.graph.nodes[src]["bytes_sent"] += pkt.length
@@ -69,8 +70,8 @@ class NetworkGraphBuilder:
         src = flow.key.src_ip
         dst = flow.key.dst_ip
 
-        self._ensure_node(src)
-        self._ensure_node(dst)
+        if not self._ensure_node(src) or not self._ensure_node(dst):
+            return
 
         self.graph.nodes[src]["bytes_sent"] += flow.forward_bytes
         self.graph.nodes[src]["packets_sent"] += flow.forward_packets
@@ -122,15 +123,20 @@ class NetworkGraphBuilder:
                     protocols={flow.key.protocol.name},
                 )
 
-    def _ensure_node(self, ip: str) -> None:
-        if not self.graph.has_node(ip):
+    def _ensure_node(self, ip: str) -> bool:
+        val = validate_ipv4(ip)
+        if not val.is_valid:
+            return False
+        norm = val.normalized_ip or ip
+        if not self.graph.has_node(norm):
             self.graph.add_node(
-                ip,
+                norm,
                 bytes_sent=0,
                 bytes_recv=0,
                 packets_sent=0,
                 packets_recv=0,
             )
+        return True
 
     def build_from_flows(self, flows: Iterable[FlowRecord]) -> nx.DiGraph:
         """Populate graph from an iterable of flow records."""
