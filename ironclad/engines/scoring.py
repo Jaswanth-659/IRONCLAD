@@ -579,18 +579,32 @@ def aggregate_engine4_final_decision(
                     if isinstance(v, list):
                         for item in v:
                             if isinstance(item, dict):
-                                for ip_key in ("source_ip", "target_ip", "ip", "src_ip", "dst_ip"):
+                                for ip_key in ("source_ip", "target_ip", "ip", "src_ip", "dst_ip", "host"):
                                     if ip_key in item and item[ip_key]:
                                         extracted_ips.add(str(item[ip_key]))
                     elif isinstance(v, dict):
-                        for ip_key in ("source_ip", "target_ip", "ip"):
+                        for ip_key in ("source_ip", "target_ip", "ip", "src_ip", "dst_ip", "host"):
                             if ip_key in v and v[ip_key]:
                                 extracted_ips.add(str(v[ip_key]))
+                    elif isinstance(v, str):
+                        if k in ("source_ip", "target_ip", "ip", "src_ip", "dst_ip", "host", "surging_host", "client_ip"):
+                            extracted_ips.add(v)
 
                 for hip in extracted_ips:
                     host_findings.setdefault(hip, []).append(f"[{sub.subengine_id}] {sub.explanation}")
                     host_engines.setdefault(hip, set()).add(eng_key)
                     host_max_risk[hip] = max(host_max_risk.get(hip, 0.0), sub.risk_score)
+
+    # Ingest suspicious hosts from dynamic flags if available in context
+    if context and context.get("dynamic_flags"):
+        for f in context.get("dynamic_flags"):
+            h = getattr(f, "associated_host", None) or (f.get("associated_host") if isinstance(f, dict) else None)
+            sev = getattr(f, "severity", None) or (f.get("severity") if isinstance(f, dict) else None)
+            sev_str = sev.value if hasattr(sev, "value") else str(sev)
+            if h and h not in ("0.0.0.0", "ANY", "192.168.1.10") and sev_str in ("HIGH", "CRITICAL"):
+                host_findings.setdefault(h, []).append(f"[DYNAMIC_FLAG] {getattr(f, 'detection_explanation', '')}")
+                host_engines.setdefault(h, set()).add("DYNAMIC_TELEMETRY")
+                host_max_risk[h] = max(host_max_risk.get(h, 0.0), 6.5)
 
     correlations: List[CorrelationItem] = []
     for hip, findings in host_findings.items():
@@ -632,17 +646,30 @@ def aggregate_engine4_final_decision(
     multi_host_contribution = 0.0
 
     if context:
-        # 1. Data-Loss contribution
+        # 1. Data-Loss contribution (combining deterministic packet loss % & TCP retransmission rate)
         dl_report = context.get("data_loss")
         if dl_report:
             loss_pct = getattr(dl_report, "overall_loss_percentage", None)
-            if loss_pct is not None and loss_pct > 2.0:
-                if loss_pct <= 10.0:
-                    data_loss_contribution = round((loss_pct - 2.0) * 0.15, 2)
+            if loss_pct is None and isinstance(dl_report, dict):
+                loss_pct = dl_report.get("overall_loss_percentage")
+
+            retrans_rate = 0.0
+            proto_m = getattr(dl_report, "protocol_metrics", {}) or (dl_report.get("protocol_metrics", {}) if isinstance(dl_report, dict) else {})
+            if "TCP" in proto_m:
+                tcp_item = proto_m["TCP"]
+                retrans = getattr(tcp_item, "retransmissions", 0) if hasattr(tcp_item, "retransmissions") else (tcp_item.get("retransmissions", 0) if isinstance(tcp_item, dict) else 0)
+                obs = getattr(tcp_item, "packets_observed", 0) if hasattr(tcp_item, "packets_observed") else (tcp_item.get("packets_observed", 0) if isinstance(tcp_item, dict) else 0)
+                if obs > 0:
+                    retrans_rate = (retrans / obs) * 100.0
+
+            effective_loss = max(loss_pct or 0.0, retrans_rate)
+            if effective_loss > 2.0:
+                if effective_loss <= 10.0:
+                    data_loss_contribution = round((effective_loss - 2.0) * 0.15, 2)
                 else:
-                    data_loss_contribution = round(1.2 + min(1.3, (loss_pct - 10.0) * 0.08), 2)
+                    data_loss_contribution = round(1.2 + min(1.3, (effective_loss - 10.0) * 0.08), 2)
                 calculation_steps.append(
-                    f"Data loss factor added +{data_loss_contribution} risk ({loss_pct:.1f}% packet loss observed)."
+                    f"Data loss factor added +{data_loss_contribution} risk ({effective_loss:.1f}% transmission degradation observed)."
                 )
 
         # 2. Traffic rate surge contribution
@@ -655,12 +682,12 @@ def aggregate_engine4_final_decision(
                     f"Dynamic traffic rate surge added +{traffic_rate_contribution} risk ({len(crit_flags)} rate anomaly flag(s))."
                 )
 
-    # 3. Multi-host correlation contribution
-    suspicious_hosts = [c for c in correlations if c.max_risk_score >= 5.0]
+    # 3. Multi-host correlation contribution (fine-tuned: 2 hosts -> +0.5, 3 hosts -> +1.0, 4+ hosts -> +1.5)
+    suspicious_hosts = [c for c in correlations if c.max_risk_score >= 4.0]
     if len(suspicious_hosts) >= 2 and not confirmed_threat_intel:
         multi_host_contribution = round(min(1.5, (len(suspicious_hosts) - 1) * 0.5), 2)
         calculation_steps.append(
-            f"Multi-host correlation added +{multi_host_contribution} risk ({len(suspicious_hosts)} distinct suspicious client hosts)."
+            f"Multi-host coordination factor added +{multi_host_contribution} risk ({len(suspicious_hosts)} distinct suspicious client hosts interacting with target)."
         )
 
     if confirmed_threat_intel:

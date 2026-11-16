@@ -51,14 +51,15 @@ export default function Overview() {
     return <div className="flex items-center justify-center h-64 text-muted text-sm">Loading telemetry…</div>
   }
 
+  const dist = data.risk_distribution || { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 }
   const riskDistData = [
-    { name: 'CRITICAL', count: data.risk_distribution.CRITICAL, color: '#ef4444' },
-    { name: 'HIGH',     count: data.risk_distribution.HIGH,     color: '#f97316' },
-    { name: 'MEDIUM',   count: data.risk_distribution.MEDIUM,   color: '#f59e0b' },
-    { name: 'LOW',      count: data.risk_distribution.LOW,      color: '#3b82f6' },
+    { name: 'CRITICAL', count: dist.CRITICAL || 0, color: '#ef4444' },
+    { name: 'HIGH',     count: dist.HIGH || 0,     color: '#f97316' },
+    { name: 'MEDIUM',   count: dist.MEDIUM || 0,   color: '#f59e0b' },
+    { name: 'LOW',      count: dist.LOW || 0,      color: '#3b82f6' },
   ]
 
-  const statusKey = data.network_security_status.replace(/ /g, '_').toUpperCase()
+  const statusKey = (data.network_security_status || 'NORMAL').replace(/ /g, '_').toUpperCase()
 
   return (
     <div className="p-6 space-y-6">
@@ -76,12 +77,12 @@ export default function Overview() {
 
       {/* Metric Cards */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <MetricCard title="Total Packets"    value={data.total_packets_analysed.toLocaleString()} icon={Layers}       color="text-accent" />
-        <MetricCard title="Total Flows"      value={data.total_flows.toLocaleString()}             icon={Activity}     color="text-blue-400" />
-        <MetricCard title="Active Alerts"    value={data.active_alerts}                            icon={AlertTriangle} color="text-danger" />
-        <MetricCard title="Suspicious Hosts" value={data.suspicious_hosts}                         icon={Users}        color="text-warning" />
-        <MetricCard title="Overall Risk"     value={`${data.overall_risk_score.toFixed(1)}/10`}   icon={TrendingUp}   color={
-          data.overall_risk_score >= 7 ? 'text-danger' : data.overall_risk_score >= 5 ? 'text-warning' : 'text-success'
+        <MetricCard title="Total Packets"    value={(data.total_packets_analysed ?? 0).toLocaleString()} icon={Layers}       color="text-accent" />
+        <MetricCard title="Total Flows"      value={(data.total_flows ?? 0).toLocaleString()}             icon={Activity}     color="text-blue-400" />
+        <MetricCard title="Active Alerts"    value={data.active_alerts ?? 0}                            icon={AlertTriangle} color="text-danger" />
+        <MetricCard title="Suspicious Hosts" value={data.suspicious_hosts ?? 0}                         icon={Users}        color="text-warning" />
+        <MetricCard title="Overall Risk"     value={`${(data.overall_risk_score ?? 0).toFixed(1)}/10`}   icon={TrendingUp}   color={
+          (data.overall_risk_score ?? 0) >= 7 ? 'text-danger' : (data.overall_risk_score ?? 0) >= 5 ? 'text-warning' : 'text-success'
         } />
       </div>
 
@@ -138,11 +139,11 @@ export default function Overview() {
           <h2 className="text-sm font-medium text-white mb-3">Traffic Timeline</h2>
           <ResponsiveContainer width="100%" height={180}>
             <LineChart data={data.timeline}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e2a3a" />
-              <XAxis dataKey="time" tick={{ fill: '#6b7280', fontSize: 11 }} />
-              <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} />
-              <Tooltip contentStyle={{ background: '#161b27', border: '1px solid #1e2a3a', borderRadius: 6, fontSize: 12 }} />
-              <Line type="monotone" dataKey="throughput_kb" stroke="#3b82f6" strokeWidth={2} dot={false} name="KB/s" />
+              <CartesianGrid strokeDasharray="3 3" stroke="#1c1c1c" />
+              <XAxis dataKey="time" tick={{ fill: '#71717a', fontSize: 11 }} />
+              <YAxis tick={{ fill: '#71717a', fontSize: 11 }} />
+              <Tooltip contentStyle={{ background: '#080808', border: '1px solid #1c1c1c', borderRadius: 6, fontSize: 12, color: '#fff' }} />
+              <Line type="monotone" dataKey="throughput_kb" stroke="#ffffff" strokeWidth={2} dot={false} name="KB/s" />
               <Line type="monotone" dataKey="risk_index"    stroke="#ef4444" strokeWidth={2} dot={false} name="Risk" />
             </LineChart>
           </ResponsiveContainer>
@@ -152,10 +153,10 @@ export default function Overview() {
           <h2 className="text-sm font-medium text-white mb-3">Risk Distribution</h2>
           <ResponsiveContainer width="100%" height={180}>
             <BarChart data={riskDistData} barSize={36}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e2a3a" />
-              <XAxis dataKey="name" tick={{ fill: '#6b7280', fontSize: 11 }} />
-              <YAxis tick={{ fill: '#6b7280', fontSize: 11 }} />
-              <Tooltip contentStyle={{ background: '#161b27', border: '1px solid #1e2a3a', borderRadius: 6, fontSize: 12 }} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#1c1c1c" />
+              <XAxis dataKey="name" tick={{ fill: '#71717a', fontSize: 11 }} />
+              <YAxis tick={{ fill: '#71717a', fontSize: 11 }} />
+              <Tooltip contentStyle={{ background: '#080808', border: '1px solid #1c1c1c', borderRadius: 6, fontSize: 12, color: '#fff' }} />
               <Bar dataKey="count">
                 {riskDistData.map((entry, i) => (
                   <Cell key={i} fill={entry.color} />

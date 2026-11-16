@@ -700,6 +700,146 @@ class DynamicThresholdManager:
             "host_assessments": host_assessments,
         }
 
+    def evaluate_session_anomalies(
+        self,
+        flows: List[Any],
+        host_metrics: Optional[Dict[str, Any]] = None,
+        data_loss_report: Optional[Any] = None,
+        traffic_rate_report: Optional[Any] = None,
+    ) -> List[DynamicAnomalyFlag]:
+        """
+        Systematically evaluates flow-level, host-level, rate, and data loss metrics
+        against dynamic empirical thresholds across all 12 anomaly categories.
+        
+        Returns an explainable list of DynamicAnomalyFlag objects (sorted by severity and deviation %).
+        """
+        flags: List[DynamicAnomalyFlag] = []
+        host_metrics = host_metrics or {}
+        
+        # 1. Evaluate Flow-level metrics
+        for flow in flows:
+            src_ip = getattr(flow.key, "src_ip", "0.0.0.0") if hasattr(flow, "key") else "0.0.0.0"
+            proto_val = getattr(flow.key, "protocol", "ANY") if hasattr(flow, "key") else "ANY"
+            proto_name = getattr(proto_val, "name", str(proto_val))
+            dur = getattr(flow, "duration", 0.0)
+            pkt_count = getattr(flow, "packet_count", 0)
+            byte_count = getattr(flow, "byte_count", 0)
+            fwd_bytes = getattr(flow, "forward_bytes", 0)
+            bwd_bytes = getattr(flow, "backward_bytes", 0)
+            lengths = getattr(flow, "packet_lengths", [])
+            iats = getattr(flow, "inter_arrival_times", [])
+            tcp_flags = getattr(flow, "tcp_flags", {})
+            entropies = getattr(flow, "payload_entropies", [])
+
+            pps = pkt_count / dur if dur > 0 else float(pkt_count)
+            f_rate = self.evaluate(AnomalyCategory.PACKET_RATE, pps, host=src_ip, protocol=proto_name)
+            if f_rate.severity != FlagSeverity.NORMAL:
+                flags.append(f_rate)
+
+            f_vol = self.evaluate(AnomalyCategory.TRAFFIC_VOLUME, float(byte_count), host=src_ip, protocol=proto_name)
+            if f_vol.severity != FlagSeverity.NORMAL:
+                flags.append(f_vol)
+
+            if lengths:
+                mean_len = sum(lengths) / len(lengths)
+                f_size = self.evaluate(AnomalyCategory.PACKET_SIZE, float(mean_len), host=src_ip, protocol=proto_name)
+                if f_size.severity != FlagSeverity.NORMAL:
+                    flags.append(f_size)
+
+            if iats:
+                mean_iat = sum(iats) / len(iats)
+                f_iat = self.evaluate(AnomalyCategory.INTER_ARRIVAL_TIME, float(mean_iat), host=src_ip, protocol=proto_name)
+                if f_iat.severity != FlagSeverity.NORMAL:
+                    flags.append(f_iat)
+
+                if len(iats) >= 4 and mean_iat > 0.001:
+                    iat_std = math.sqrt(sum((x - mean_iat) ** 2 for x in iats) / len(iats))
+                    cv = iat_std / mean_iat
+                    f_period = self.evaluate(AnomalyCategory.PERIODICITY, float(cv), host=src_ip, protocol=proto_name, context_detail="Inter-arrival Coefficient of Variation")
+                    if f_period.severity != FlagSeverity.NORMAL:
+                        flags.append(f_period)
+
+                    # Jitter
+                    jitter_val = sum(abs(iats[i] - iats[i - 1]) for i in range(1, len(iats))) / (len(iats) - 1) if len(iats) > 1 else 0.0
+                    f_jit = self.evaluate(AnomalyCategory.JITTER, float(jitter_val), host=src_ip, protocol=proto_name)
+                    if f_jit.severity != FlagSeverity.NORMAL:
+                        flags.append(f_jit)
+
+                    # Burstiness
+                    burst = (iat_std - mean_iat) / (iat_std + mean_iat + 1e-6)
+                    if burst > 0:
+                        f_burst = self.evaluate(AnomalyCategory.BURST_TRAFFIC, float(burst), host=src_ip, protocol=proto_name)
+                        if f_burst.severity != FlagSeverity.NORMAL:
+                            flags.append(f_burst)
+
+            # Directional Imbalance (severe upload exfiltration)
+            if fwd_bytes > 0:
+                ratio = fwd_bytes / max(1.0, float(bwd_bytes))
+                if ratio > 5.0 and fwd_bytes > 1000:
+                    f_imb = self.evaluate(AnomalyCategory.DIRECTIONAL_IMBALANCE, float(ratio), host=src_ip, protocol=proto_name, context_detail="Forward/Backward Byte Asymmetry")
+                    if f_imb.severity != FlagSeverity.NORMAL:
+                        flags.append(f_imb)
+
+            # Connection Failures (RST count or unacknowledged SYNs)
+            rst_cnt = tcp_flags.get("RST", 0) if isinstance(tcp_flags, dict) else 0
+            if rst_cnt > 0:
+                f_conn = self.evaluate(AnomalyCategory.CONNECTION_FAILURES, float(rst_cnt), host=src_ip, protocol=proto_name, context_detail="TCP RST termination packets")
+                if f_conn.severity != FlagSeverity.NORMAL:
+                    flags.append(f_conn)
+
+            # Protocol Anomaly / High Entropy
+            if entropies:
+                mean_ent = sum(entropies) / len(entropies)
+                if mean_ent > 7.2:
+                    f_proto = self.evaluate(AnomalyCategory.PROTOCOL_ANOMALY, float(mean_ent), host=src_ip, protocol=proto_name, context_detail="High payload entropy / encrypted stream")
+                    if f_proto.severity != FlagSeverity.NORMAL:
+                        flags.append(f_proto)
+
+        # 2. Host-Level Destination Diversity
+        for host, metrics in host_metrics.items():
+            degree = getattr(metrics, "out_degree", 0) if hasattr(metrics, "out_degree") else (metrics.get("out_degree", 0) if isinstance(metrics, dict) else 0)
+            if degree > 0:
+                f_div = self.evaluate(AnomalyCategory.DESTINATION_DIVERSITY, float(degree), host=host, context_detail="Host out-degree fan-out")
+                if f_div.severity != FlagSeverity.NORMAL:
+                    flags.append(f_div)
+
+        # 3. Data Loss Evaluation
+        if data_loss_report:
+            loss_pct = getattr(data_loss_report, "overall_loss_percentage", None)
+            retrans_rate = 0.0
+            retrans_count = 0
+            proto_metrics = getattr(data_loss_report, "protocol_metrics", {})
+            if isinstance(proto_metrics, dict) and "TCP" in proto_metrics:
+                tcp_m = proto_metrics["TCP"]
+                retrans_count = getattr(tcp_m, "retransmissions", 0)
+                tcp_pkts = getattr(tcp_m, "packets_observed", 0)
+                if tcp_pkts > 0:
+                    retrans_rate = (retrans_count / tcp_pkts) * 100.0
+
+            loss_val = max(loss_pct or 0.0, retrans_rate)
+            if loss_val > 0:
+                f_loss = self.evaluate(AnomalyCategory.DATA_LOSS, float(loss_val), host="0.0.0.0", context_detail=f"Packet Loss / TCP Retransmission Rate ({loss_val:.1f}%)")
+                if f_loss.severity != FlagSeverity.NORMAL:
+                    flags.append(f_loss)
+
+        # 4. Ingest any additional flags from traffic_rate_report
+        if traffic_rate_report and hasattr(traffic_rate_report, "rate_flags"):
+            for rf in traffic_rate_report.rate_flags:
+                if isinstance(rf, DynamicAnomalyFlag):
+                    if rf.severity != FlagSeverity.NORMAL and not any(x.anomaly_category == rf.anomaly_category and x.associated_host == rf.associated_host for x in flags):
+                        flags.append(rf)
+
+        # Sort flags by severity descending, then deviation % descending
+        severity_rank = {
+            FlagSeverity.CRITICAL: 4,
+            FlagSeverity.HIGH: 3,
+            FlagSeverity.MEDIUM: 2,
+            FlagSeverity.LOW: 1,
+            FlagSeverity.NORMAL: 0,
+        }
+        flags.sort(key=lambda x: (severity_rank.get(x.severity, 0), abs(x.deviation_percentage)), reverse=True)
+        return flags
+
     # Convenience aliases
     evaluate_value = evaluate
     correlate_flags = correlate_anomalies

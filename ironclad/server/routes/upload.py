@@ -98,3 +98,32 @@ async def generate_and_analyze_synthetic(background_tasks: BackgroundTasks) -> U
         status="PROCESSING",
         message="Synthetic multi-vector capture generated. Analysis started.",
     )
+
+
+@router.post("/generate-multi-client", response_model=UploadResponse)
+async def generate_and_analyze_multi_client(background_tasks: BackgroundTasks) -> UploadResponse:
+    """
+    1-Click multi-client attack scenario simulation:
+    Simulates >2 client laptops (4 distinct laptops: 192.168.1.51, .52, .53, .54)
+    hitting a single primary laptop (192.168.1.10) with controlled data loss
+    (25% UDP packet drop via sequence tags, and TCP sequence gaps/retransmissions).
+    """
+    from ironclad.testing.multi_client_generator import generate_scenario_d_compound_anomalies
+
+    task_id = str(uuid.uuid4())
+    filename = f"multi_laptop_attack_{task_id[:8]}.pcap"
+    save_path = UPLOAD_DIR / filename
+
+    res = generate_scenario_d_compound_anomalies(str(save_path))
+    file_size = save_path.stat().st_size
+
+    create_session(task_id, filename, file_size)
+    background_tasks.add_task(execute_pcap_analysis, task_id, str(save_path), filename)
+
+    return UploadResponse(
+        task_id=task_id,
+        filename=filename,
+        file_size=file_size,
+        status="PROCESSING",
+        message=f"Multi-client attack scenario generated ({len(res['attacking_laptops'])} laptops hitting primary laptop with controlled {res['controlled_loss_percentage']}% loss). Analysis started.",
+    )

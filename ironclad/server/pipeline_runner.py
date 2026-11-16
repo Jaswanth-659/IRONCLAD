@@ -99,11 +99,20 @@ async def execute_pcap_analysis(task_id: str, pcap_path: str, filename: str) -> 
             },
         })
 
+        # Step 2.5: Evaluate dynamic anomaly flags across all 12 categories
+        from ironclad.stats.dynamic_thresholds import dynamic_threshold_manager
+        session_dynamic_flags = dynamic_threshold_manager.evaluate_session_anomalies(
+            flows=flows,
+            host_metrics=host_metrics,
+            data_loss_report=data_loss_report,
+            traffic_rate_report=traffic_rate_report,
+        )
+
         # Step 3: Run Decision and Correlation Engine (Engine 4)
         decision_context = {
             "data_loss": data_loss_report,
             "traffic_rate": traffic_rate_report,
-            "dynamic_flags": traffic_rate_report.rate_flags if traffic_rate_report else [],
+            "dynamic_flags": session_dynamic_flags,
         }
         decision_report = await loop.run_in_executor(
             _executor, _sync_run_decision_engine, engine_evaluations, flows, host_metrics, decision_context
@@ -123,6 +132,7 @@ async def execute_pcap_analysis(task_id: str, pcap_path: str, filename: str) -> 
             pcap_path,
             data_loss_report,
             traffic_rate_report,
+            session_dynamic_flags,
         )
 
         # Step 5: Final completion update
@@ -238,8 +248,9 @@ def _sync_persist_results(
     pcap_path: Optional[str] = None,
     data_loss_report: Optional[Any] = None,
     traffic_rate_report: Optional[Any] = None,
+    dynamic_flags: Optional[List[Any]] = None,
 ) -> None:
-    """Save all evaluation outputs, sub-engines, data loss, traffic rates, and derived incidents to SQLite."""
+    """Save all evaluation outputs, sub-engines, data loss, traffic rates, dynamic flags, and derived incidents to SQLite."""
     # Complete main session record
     complete_session(
         task_id=task_id,
@@ -260,14 +271,23 @@ def _sync_persist_results(
         except Exception as e:
             logger.error("Failed saving session data loss for %s: %s", task_id, e)
 
-    # Persist traffic rate telemetry & dynamic flags
+    # Persist traffic rate telemetry
     if traffic_rate_report is not None:
         try:
             save_session_traffic_rates(task_id, traffic_rate_report.to_dict())
-            all_flags = [f.to_dict() if hasattr(f, "to_dict") else f for f in traffic_rate_report.rate_flags]
-            save_session_dynamic_flags(task_id, all_flags)
         except Exception as e:
-            logger.error("Failed saving session traffic rates or dynamic flags for %s: %s", task_id, e)
+            logger.error("Failed saving session traffic rates for %s: %s", task_id, e)
+
+    # Persist comprehensive dynamic anomaly flags list across all 12 categories
+    try:
+        flags_to_save = []
+        if dynamic_flags:
+            flags_to_save = [f.to_dict() if hasattr(f, "to_dict") else f for f in dynamic_flags]
+        elif traffic_rate_report is not None and hasattr(traffic_rate_report, "rate_flags"):
+            flags_to_save = [f.to_dict() if hasattr(f, "to_dict") else f for f in traffic_rate_report.rate_flags]
+        save_session_dynamic_flags(task_id, flags_to_save)
+    except Exception as e:
+        logger.error("Failed saving session dynamic flags for %s: %s", task_id, e)
 
     # Persist Primary Engines & Sub-Engines
     for eng_id, eng in decision_report.engine_results.items():

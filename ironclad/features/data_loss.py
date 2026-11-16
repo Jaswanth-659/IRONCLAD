@@ -508,52 +508,72 @@ class DataLossMonitor:
         # Generate Data Loss Alerts
         alerts = []
         if overall_loss_pct is not None and overall_loss_pct >= 5.0:
+            msg = (
+                f"Packet loss exceeds defensive threshold. {overall_lost} packets lost out of "
+                f"{overall_expected} expected. Est. missing volume: {missing_bytes_est} bytes."
+            )
             alerts.append({
                 "severity": "CRITICAL" if overall_loss_pct >= 15.0 else "HIGH",
+                "protocol": "ALL",
+                "metric": "Overall Packet Loss",
                 "title": f"Elevated Network Packet Loss ({overall_loss_pct}%)",
-                "detail": (
-                    f"Packet loss exceeds defensive threshold. {overall_lost} packets lost out of "
-                    f"{overall_expected} expected. Est. missing volume: {missing_bytes_est} bytes."
-                ),
+                "message": msg,
+                "detail": msg,
                 "timestamp": self.last_ts or time.time(),
             })
 
         if tcp_count > 0 and (self.total_tcp_retransmissions >= 5 or self.total_tcp_sequence_gaps > 0):
             retrans_rate = (self.total_tcp_retransmissions / float(tcp_count)) * 100.0
             if retrans_rate >= 15.0:
+                msg = (
+                    f"Detected {self.total_tcp_retransmissions} retransmissions in {tcp_count} TCP packets ({retrans_rate:.1f}%). "
+                    "Indicates high network latency, packet loss before receiver, or buffer saturation."
+                )
                 alerts.append({
                     "severity": "CRITICAL" if retrans_rate >= 40.0 else "HIGH",
+                    "protocol": "TCP",
+                    "metric": "Retransmission Rate",
                     "title": f"Elevated TCP Retransmission Rate ({retrans_rate:.1f}%)",
-                    "detail": (
-                        f"Detected {self.total_tcp_retransmissions} retransmissions in {tcp_count} TCP packets ({retrans_rate:.1f}%). "
-                        "Indicates high network latency, packet loss before receiver, or buffer saturation."
-                    ),
+                    "message": msg,
+                    "detail": msg,
                     "timestamp": self.last_ts or time.time(),
                 })
             elif self.total_tcp_retransmissions >= 5:
+                msg = f"Observed {self.total_tcp_retransmissions} retransmission events across TCP flows ({retrans_rate:.1f}%)."
                 alerts.append({
                     "severity": "MEDIUM",
+                    "protocol": "TCP",
+                    "metric": "Retransmission Density",
                     "title": "Abnormal TCP Retransmission Density",
-                    "detail": f"Observed {self.total_tcp_retransmissions} retransmission events across TCP flows ({retrans_rate:.1f}%).",
+                    "message": msg,
+                    "detail": msg,
                     "timestamp": self.last_ts or time.time(),
                 })
 
         if self.total_tcp_sequence_gaps > 0:
+            msg = (
+                f"Identified {self.total_tcp_sequence_gaps} missing sequence intervals accounting for "
+                f"~{self.total_tcp_missing_bytes} bytes of dropped or suppressed stream payload."
+            )
             alerts.append({
                 "severity": "HIGH",
+                "protocol": "TCP",
+                "metric": "Sequence Gaps",
                 "title": f"TCP Sequence Gaps Detected ({self.total_tcp_sequence_gaps} gaps)",
-                "detail": (
-                    f"Identified {self.total_tcp_sequence_gaps} missing sequence intervals accounting for "
-                    f"~{self.total_tcp_missing_bytes} bytes of dropped or suppressed stream payload."
-                ),
+                "message": msg,
+                "detail": msg,
                 "timestamp": self.last_ts or time.time(),
             })
 
         if icmp_loss_pct is not None and icmp_loss_pct >= 20.0:
+            msg = f"{self.icmp_echo_requests - self.icmp_echo_replies} echo probes dropped without response."
             alerts.append({
                 "severity": "HIGH",
+                "protocol": "ICMP",
+                "metric": "Echo Probe Drops",
                 "title": f"ICMP Reachability Degradation ({icmp_loss_pct}% Unanswered)",
-                "detail": f"{self.icmp_echo_requests - self.icmp_echo_replies} echo probes dropped without response.",
+                "message": msg,
+                "detail": msg,
                 "timestamp": self.last_ts or time.time(),
             })
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 
 export interface WsMessage {
   type: string
+  data?: Record<string, any>
   [key: string]: unknown
 }
 

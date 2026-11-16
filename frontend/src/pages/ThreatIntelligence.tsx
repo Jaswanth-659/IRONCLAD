@@ -14,7 +14,7 @@ export default function ThreatIntelligence() {
   if (error)   return <div className="p-6 text-sm text-danger">Error: {error}</div>
 
   const indicators = (data?.indicators ?? []).filter(
-    (ind) => !search || ind.indicator.includes(search) || ind.threat_type.toLowerCase().includes(search.toLowerCase())
+    (ind) => !search || String(ind.indicator || '').toLowerCase().includes(search.toLowerCase()) || String(ind.threat_type || '').toLowerCase().includes(search.toLowerCase())
   )
 
   return (
@@ -46,17 +46,17 @@ export default function ThreatIntelligence() {
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
-            {indicators.map((ind) => (
+            {indicators.map((ind, idx) => (
               <tr
-                key={ind.id}
-                className={`hover:bg-white/5 transition-colors ${ind.confidence >= 90 ? 'border-l-2 border-l-danger' : ''}`}
+                key={ind.id || ind.indicator || idx}
+                className={`hover:bg-white/5 transition-colors ${(ind.confidence || 0) >= 90 ? 'border-l-2 border-l-danger' : ''}`}
               >
                 <td className="px-4 py-3">
                   <span className="font-mono text-white">{ind.indicator}</span>
                 </td>
-                <td className="px-4 py-3 text-muted">{ind.indicator_type}</td>
+                <td className="px-4 py-3 text-muted">{ind.indicator_type || (ind as any).type || 'IP'}</td>
                 <td className="px-4 py-3">
-                  <RiskBadge value={ind.threat_type.replace(/[^A-Z0-9]/gi, '_').toUpperCase()} />
+                  <RiskBadge value={String(ind.threat_type || 'UNKNOWN').replace(/[^A-Z0-9]/gi, '_').toUpperCase()} />
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
@@ -64,16 +64,16 @@ export default function ThreatIntelligence() {
                       <div
                         className="h-1.5 rounded-full"
                         style={{
-                          width: `${ind.confidence}%`,
-                          backgroundColor: ind.confidence >= 90 ? '#ef4444' : '#f59e0b',
+                          width: `${Math.min(100, Math.max(0, ind.confidence || 0))}%`,
+                          backgroundColor: (ind.confidence || 0) >= 90 ? '#ef4444' : '#f59e0b',
                         }}
                       />
                     </div>
-                    <span className="font-mono">{ind.confidence}%</span>
+                    <span className="font-mono">{(ind.confidence || 0).toFixed(0)}%</span>
                   </div>
                 </td>
-                <td className="px-4 py-3 text-muted">{ind.source}</td>
-                <td className="px-4 py-3 text-muted">{ind.last_seen}</td>
+                <td className="px-4 py-3 text-muted">{ind.source || '—'}</td>
+                <td className="px-4 py-3 text-muted">{ind.last_seen || '—'}</td>
               </tr>
             ))}
             {indicators.length === 0 && (

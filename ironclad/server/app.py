@@ -31,6 +31,7 @@ from ironclad.server.routes import (
     analysis_router,
     containment_router,
     incidents_router,
+    loss_control_router,
     threat_intel_router,
     upload_router,
 )
@@ -216,6 +217,7 @@ app.include_router(analysis_router)
 app.include_router(incidents_router)
 app.include_router(containment_router)
 app.include_router(threat_intel_router)
+app.include_router(loss_control_router)
 
 
 @app.get("/api/health")

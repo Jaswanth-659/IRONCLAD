@@ -36,11 +36,11 @@ export default function InvestigationDetail() {
           <RiskBadge value={inc.classification} />
         </div>
         <p className="text-sm text-gray-300">{inc.description}</p>
-        <div className="flex gap-4 mt-3 text-xs text-muted">
+        <div className="flex gap-4 mt-3 text-xs text-muted flex-wrap">
           <span>Protocol: <span className="text-white">{inc.protocol}</span></span>
-          <span>Risk: <span className="font-bold font-mono text-danger">{inc.risk_score.toFixed(1)}/10</span></span>
+          <span>Risk: <span className="font-bold font-mono text-danger">{(inc.risk_score ?? 0).toFixed(1)}/10</span></span>
           <span>Engine: <span className="text-white">{inc.triggered_engine}</span></span>
-          <span>Time: <span className="text-white font-mono">{new Date(inc.timestamp).toLocaleString()}</span></span>
+          <span>Time: <span className="text-white font-mono">{inc.timestamp ? new Date(inc.timestamp).toLocaleString() : '—'}</span></span>
         </div>
       </div>
 
@@ -52,13 +52,13 @@ export default function InvestigationDetail() {
             {primary_engine_findings.map((ef, i) => (
               <div key={i} className="border border-border rounded p-3">
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs text-white font-medium">{String(ef.name)}</span>
-                  <RiskBadge value={String(ef.escalation)} />
+                  <span className="text-xs text-white font-medium">{String(ef.name || 'Detection Engine')}</span>
+                  <RiskBadge value={String(ef.escalation || 'NORMAL')} />
                 </div>
-                <p className="text-xs text-gray-400">{String(ef.explanation)}</p>
+                <p className="text-xs text-gray-400">{String(ef.explanation || '')}</p>
                 <div className="flex gap-3 mt-1.5 text-xs text-muted">
-                  <span>Risk: <span className="text-white font-mono">{Number(ef.risk_score).toFixed(1)}</span></span>
-                  <span>Confidence: <span className="text-white font-mono">{Number(ef.confidence_score).toFixed(0)}%</span></span>
+                  <span>Risk: <span className="text-white font-mono">{(Number(ef.risk_score) || 0).toFixed(1)}</span></span>
+                  <span>Confidence: <span className="text-white font-mono">{(Number(ef.confidence_score) || 0).toFixed(0)}%</span></span>
                 </div>
               </div>
             ))}

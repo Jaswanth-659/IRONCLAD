@@ -12,6 +12,7 @@ import ipaddress
 import json
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -250,6 +251,79 @@ def init_database() -> None:
         CREATE INDEX IF NOT EXISTS idx_data_loss_session ON session_data_loss(session_id);
         CREATE INDEX IF NOT EXISTS idx_dynamic_flags_session ON dynamic_anomaly_flags(session_id);
         CREATE INDEX IF NOT EXISTS idx_traffic_rates_session ON session_traffic_rates(session_id);
+
+        CREATE TABLE IF NOT EXISTS loss_control_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT UNIQUE NOT NULL,
+            test_name TEXT NOT NULL,
+            configured_loss_pct REAL NOT NULL,
+            loss_mode TEXT NOT NULL,
+            burst_length INTEGER DEFAULT 1,
+            target_sources_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT DEFAULT 'IDLE',
+            total_packets_sent INTEGER DEFAULT 0,
+            total_packets_dropped INTEGER DEFAULT 0,
+            total_packets_recovered INTEGER DEFAULT 0,
+            total_packets_unrecovered INTEGER DEFAULT 0,
+            recovery_rate_pct REAL DEFAULT 0.0,
+            mean_recovery_latency_ms REAL DEFAULT 0.0,
+            buffer_overflow_drops INTEGER DEFAULT 0,
+            capture_drops INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            completed_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS loss_detected_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            seq_num INTEGER NOT NULL,
+            protocol TEXT NOT NULL,
+            src_ip TEXT NOT NULL,
+            dst_ip TEXT NOT NULL,
+            loss_type TEXT NOT NULL,
+            detection_timestamp REAL NOT NULL,
+            waiting_window_ms REAL DEFAULT 200.0,
+            is_confirmed_loss INTEGER DEFAULT 1,
+            payload_bytes INTEGER DEFAULT 0,
+            payload_hash TEXT,
+            FOREIGN KEY (session_id) REFERENCES loss_control_sessions(session_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS loss_recovery_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            seq_num INTEGER NOT NULL,
+            protocol TEXT NOT NULL,
+            src_ip TEXT NOT NULL,
+            dst_ip TEXT NOT NULL,
+            recovery_method TEXT NOT NULL,
+            recovery_latency_ms REAL NOT NULL,
+            is_valid INTEGER DEFAULT 1,
+            validation_status TEXT NOT NULL,
+            hash_algorithm TEXT DEFAULT 'SHA-256',
+            checksum_expected TEXT,
+            checksum_actual TEXT,
+            payload_bytes INTEGER DEFAULT 0,
+            timestamp REAL NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES loss_control_sessions(session_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS loss_unrecovered_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            seq_num INTEGER NOT NULL,
+            protocol TEXT NOT NULL,
+            src_ip TEXT NOT NULL,
+            dst_ip TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            missing_bytes INTEGER DEFAULT 0,
+            timestamp REAL NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES loss_control_sessions(session_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_loss_events_session ON loss_detected_events(session_id);
+        CREATE INDEX IF NOT EXISTS idx_loss_recovery_session ON loss_recovery_records(session_id);
+        CREATE INDEX IF NOT EXISTS idx_loss_unrecovered_session ON loss_unrecovered_records(session_id);
         """)
 
         # Seed threat intel indicators if empty
@@ -794,6 +868,20 @@ def build_and_save_session_topology(session_id: str, pcap_path: Optional[str] = 
     for ti in cur_ti.fetchall():
         threat_intel_ips.add(ti["indicator"])
 
+    # Query dynamic anomaly flags for this session
+    cur_flags = conn.execute(
+        "SELECT associated_host, severity, explanation FROM dynamic_anomaly_flags WHERE session_id = ?",
+        (session_id,)
+    )
+    dynamic_anom_ips: Dict[str, float] = {}
+    for fr in cur_flags.fetchall():
+        h = fr["associated_host"]
+        sev = fr["severity"]
+        if h and h not in ("0.0.0.0", "ANY"):
+            flag_score = 8.2 if sev == "CRITICAL" else (6.5 if sev == "HIGH" else 4.5)
+            dynamic_anom_ips[h] = max(dynamic_anom_ips.get(h, 0.0), flag_score)
+            subengine_alerts_map.setdefault(h, []).append(f"Dynamic Flag [{sev}]: {fr['explanation']}")
+
     # Query containment status
     cur_cnt = conn.execute("SELECT ip, status FROM host_containment")
     containment_map = {cr["ip"]: cr["status"] for cr in cur_cnt.fetchall()}
@@ -832,6 +920,13 @@ def build_and_save_session_topology(session_id: str, pcap_path: Optional[str] = 
         elif not is_internal:
             role = "WEB_SERVER"
             risk = 0.8
+
+        if ip in dynamic_anom_ips:
+            flag_r = dynamic_anom_ips[ip]
+            if flag_r > risk:
+                risk = flag_r
+                if role == "CLIENT":
+                    role = "ANOMALY_SOURCE"
 
         # Correlate with incidents
         incs = host_incidents.get(ip, [])
@@ -1093,3 +1188,195 @@ def get_session_traffic_rates(session_id: str) -> Optional[Dict[str, Any]]:
         "host_rates": json.loads(row["host_rates_json"]) if row["host_rates_json"] else [],
         "rate_timeline": json.loads(row["rate_timeline_json"]) if row["rate_timeline_json"] else [],
     }
+
+
+# ---------------------------------------------------------------------------
+# Dynamic Controlled Loss & Recovery Persistence
+# ---------------------------------------------------------------------------
+
+def create_loss_control_session(
+    session_id: str,
+    test_name: str,
+    configured_loss_pct: float,
+    loss_mode: str,
+    burst_length: int = 1,
+    target_sources: Optional[List[str]] = None,
+) -> None:
+    """Create a new controlled loss test session."""
+    conn = get_db_connection()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with conn:
+        conn.execute(
+            """INSERT INTO loss_control_sessions
+               (session_id, test_name, configured_loss_pct, loss_mode, burst_length,
+                target_sources_json, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'RUNNING', ?)""",
+            (
+                session_id,
+                test_name,
+                float(configured_loss_pct),
+                loss_mode,
+                int(burst_length),
+                json.dumps(target_sources or []),
+                now_iso,
+            )
+        )
+
+
+def record_loss_detected_event(event: Dict[str, Any]) -> None:
+    """Persist a single detected sequence loss interval."""
+    conn = get_db_connection()
+    with conn:
+        conn.execute(
+            """INSERT INTO loss_detected_events
+               (session_id, seq_num, protocol, src_ip, dst_ip, loss_type,
+                detection_timestamp, waiting_window_ms, is_confirmed_loss, payload_bytes, payload_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                event.get("session_id", ""),
+                int(event.get("seq_num", 0)),
+                event.get("protocol", "TCP"),
+                event.get("src_ip", "0.0.0.0"),
+                event.get("dst_ip", "0.0.0.0"),
+                event.get("loss_type", "NETWORK_DROP"),
+                float(event.get("detection_timestamp", time.time())),
+                float(event.get("waiting_window_ms", 200.0)),
+                1 if event.get("is_confirmed", True) else 0,
+                int(event.get("payload_bytes", 0)),
+                event.get("payload_hash"),
+            )
+        )
+
+
+def record_loss_recovery(rec: Dict[str, Any]) -> None:
+    """Persist a verified or rejected recovery record."""
+    conn = get_db_connection()
+    with conn:
+        conn.execute(
+            """INSERT INTO loss_recovery_records
+               (session_id, seq_num, protocol, src_ip, dst_ip, recovery_method,
+                recovery_latency_ms, is_valid, validation_status, hash_algorithm,
+                checksum_expected, checksum_actual, payload_bytes, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                rec.get("session_id", ""),
+                int(rec.get("seq_num", 0)),
+                rec.get("protocol", "TCP"),
+                rec.get("src_ip", "0.0.0.0"),
+                rec.get("dst_ip", "0.0.0.0"),
+                rec.get("recovery_method", "TCP_RETRANSMIT"),
+                float(rec.get("recovery_latency_ms", 0.0)),
+                1 if rec.get("validation_status") == "VALID_CHECKSUM" else 0,
+                rec.get("validation_status", "VALID_CHECKSUM"),
+                rec.get("hash_algorithm", "SHA-256"),
+                rec.get("checksum_expected"),
+                rec.get("checksum_actual"),
+                int(rec.get("payload_bytes", 0)),
+                float(rec.get("timestamp", time.time())),
+            )
+        )
+
+
+def record_loss_unrecovered(unrec: Dict[str, Any]) -> None:
+    """Persist an unrecovered sequence record upon timeout or failure."""
+    conn = get_db_connection()
+    with conn:
+        conn.execute(
+            """INSERT INTO loss_unrecovered_records
+               (session_id, seq_num, protocol, src_ip, dst_ip, reason, missing_bytes, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                unrec.get("session_id", ""),
+                int(unrec.get("seq_num", 0)),
+                unrec.get("protocol", "TCP"),
+                unrec.get("src_ip", "0.0.0.0"),
+                unrec.get("dst_ip", "0.0.0.0"),
+                unrec.get("reason", "TIMEOUT_NO_RETRANSMISSION"),
+                int(unrec.get("missing_bytes", 0)),
+                float(unrec.get("timestamp", time.time())),
+            )
+        )
+
+
+def complete_loss_control_session(session_id: str, summary: Dict[str, Any]) -> None:
+    """Finalize a controlled loss test session with verified aggregate metrics."""
+    conn = get_db_connection()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with conn:
+        conn.execute(
+            """UPDATE loss_control_sessions
+               SET status = 'COMPLETED',
+                   total_packets_sent = ?,
+                   total_packets_dropped = ?,
+                   total_packets_recovered = ?,
+                   total_packets_unrecovered = ?,
+                   recovery_rate_pct = ?,
+                   mean_recovery_latency_ms = ?,
+                   buffer_overflow_drops = ?,
+                   capture_drops = ?,
+                   completed_at = ?
+               WHERE session_id = ?""",
+            (
+                int(summary.get("total_packets_sent", 0)),
+                int(summary.get("total_losses_detected", summary.get("total_dropped", 0))),
+                int(summary.get("total_recovered_packets", 0)),
+                int(summary.get("total_unrecovered_packets", 0)),
+                float(summary.get("recovery_rate_pct", 0.0)),
+                float(summary.get("mean_recovery_latency_ms", 0.0)),
+                int(summary.get("buffer_overflow_drops", 0)),
+                int(summary.get("sensor_capture_drops", 0)),
+                now_iso,
+                session_id,
+            )
+        )
+
+
+def get_loss_control_session(session_id: str) -> Optional[Dict[str, Any]]:
+    """Retrieve details and metrics of a specific loss control session."""
+    conn = get_db_connection()
+    cur = conn.execute("SELECT * FROM loss_control_sessions WHERE session_id = ?", (session_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    res = dict(row)
+    res["target_sources"] = json.loads(res.get("target_sources_json", "[]"))
+    return res
+
+
+def get_latest_loss_control_session() -> Optional[Dict[str, Any]]:
+    """Retrieve the most recent controlled loss test session."""
+    conn = get_db_connection()
+    cur = conn.execute("SELECT * FROM loss_control_sessions ORDER BY id DESC LIMIT 1")
+    row = cur.fetchone()
+    if not row:
+        return None
+    res = dict(row)
+    res["target_sources"] = json.loads(res.get("target_sources_json", "[]"))
+    return res
+
+
+def get_loss_recovery_records(session_id: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    """Retrieve recovery validation audit records."""
+    conn = get_db_connection()
+    if session_id:
+        cur = conn.execute(
+            "SELECT * FROM loss_recovery_records WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+            (session_id, limit)
+        )
+    else:
+        cur = conn.execute("SELECT * FROM loss_recovery_records ORDER BY id DESC LIMIT ?", (limit,))
+    return [dict(r) for r in cur.fetchall()]
+
+
+def get_loss_detected_events(session_id: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    """Retrieve detected loss intervals."""
+    conn = get_db_connection()
+    if session_id:
+        cur = conn.execute(
+            "SELECT * FROM loss_detected_events WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+            (session_id, limit)
+        )
+    else:
+        cur = conn.execute("SELECT * FROM loss_detected_events ORDER BY id DESC LIMIT ?", (limit,))
+    return [dict(r) for r in cur.fetchall()]
+

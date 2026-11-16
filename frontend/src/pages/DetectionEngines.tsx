@@ -1,14 +1,16 @@
-import React from 'react'
+import React, { useEffect } from 'react'
 import { RadialBarChart, RadialBar, ResponsiveContainer } from 'recharts'
 import { useApi } from '../hooks/useApi'
+import { useWebSocket } from '../hooks/useWebSocket'
 import RiskBadge from '../components/RiskBadge'
 import type { PrimaryEngineDetail } from '../types'
 
 interface EnginesResponse { engines: PrimaryEngineDetail[] }
 
 function EngineCard({ engine }: { engine: PrimaryEngineDetail }) {
-  const riskColor = engine.risk_score >= 7 ? '#ef4444' : engine.risk_score >= 5 ? '#f59e0b' : '#22c55e'
-  const radialData = [{ value: (engine.risk_score / 10) * 100, fill: riskColor }]
+  const riskVal = engine.risk_score ?? 0
+  const riskColor = riskVal >= 7 ? '#ef4444' : riskVal >= 5 ? '#f59e0b' : '#22c55e'
+  const radialData = [{ value: (riskVal / 10) * 100, fill: riskColor }]
 
   return (
     <div className="bg-panel border border-border rounded-lg p-5">
@@ -17,7 +19,7 @@ function EngineCard({ engine }: { engine: PrimaryEngineDetail }) {
           <div className="text-xs text-muted mb-1">{engine.engine_id}</div>
           <div className="text-sm font-semibold text-white">{engine.name}</div>
         </div>
-        <RiskBadge value={engine.escalation} />
+        <RiskBadge value={engine.escalation || 'NORMAL'} />
       </div>
 
       {/* Radial gauge */}
@@ -26,12 +28,12 @@ function EngineCard({ engine }: { engine: PrimaryEngineDetail }) {
           <ResponsiveContainer width="100%" height="100%">
             <RadialBarChart cx="50%" cy="50%" innerRadius="60%" outerRadius="100%"
               startAngle={90} endAngle={-270} data={radialData}>
-              <RadialBar dataKey="value" cornerRadius={4} background={{ fill: '#1e2a3a' }} />
+              <RadialBar dataKey="value" cornerRadius={4} background={{ fill: '#1c1c1c' }} />
             </RadialBarChart>
           </ResponsiveContainer>
           <div className="absolute inset-0 flex items-center justify-center">
             <span className="text-lg font-bold font-mono" style={{ color: riskColor }}>
-              {engine.risk_score.toFixed(1)}
+              {riskVal.toFixed(1)}
             </span>
           </div>
         </div>
@@ -41,28 +43,28 @@ function EngineCard({ engine }: { engine: PrimaryEngineDetail }) {
             <div className="text-xs text-muted mb-1">Confidence</div>
             <div className="flex items-center gap-2">
               <div className="flex-1 bg-border rounded-full h-1.5">
-                <div className="h-1.5 rounded-full bg-accent" style={{ width: `${engine.confidence_score}%` }} />
+                <div className="h-1.5 rounded-full bg-white" style={{ width: `${Math.min(100, Math.max(0, engine.confidence_score ?? 0))}%` }} />
               </div>
-              <span className="text-xs text-white font-mono w-9 text-right">{engine.confidence_score.toFixed(0)}%</span>
+              <span className="text-xs text-white font-mono w-9 text-right">{(engine.confidence_score ?? 0).toFixed(0)}%</span>
             </div>
           </div>
           <div>
             <div className="text-xs text-muted mb-1">Status</div>
-            <RiskBadge value={engine.status} />
+            <RiskBadge value={engine.status || 'NORMAL'} />
           </div>
           <div>
-            <div className="text-xs text-muted">Exec time: {engine.execution_time_ms.toFixed(1)} ms</div>
+            <div className="text-xs text-muted">Exec time: {(engine.execution_time_ms ?? 0).toFixed(1)} ms</div>
           </div>
         </div>
       </div>
 
       <div className="border-t border-border pt-3">
         <div className="text-xs text-muted mb-1">Explanation</div>
-        <p className="text-xs text-gray-300 leading-relaxed">{engine.explanation}</p>
+        <p className="text-xs text-gray-300 leading-relaxed">{engine.explanation || 'No anomalies detected.'}</p>
       </div>
 
       {/* Evidence */}
-      {Object.keys(engine.evidence).length > 0 && (
+      {engine.evidence && Object.keys(engine.evidence).length > 0 && (
         <div className="mt-3 border-t border-border pt-3">
           <div className="text-xs text-muted mb-1.5">Evidence</div>
           <div className="grid grid-cols-2 gap-1.5">
@@ -80,7 +82,15 @@ function EngineCard({ engine }: { engine: PrimaryEngineDetail }) {
 }
 
 export default function DetectionEngines() {
-  const { data, loading, error } = useApi<EnginesResponse>('/api/engines')
+  const { data, loading, error, refetch } = useApi<EnginesResponse>('/api/engines')
+  const { lastMessage } = useWebSocket('ws://localhost:8000/ws')
+
+  useEffect(() => {
+    const t = String(lastMessage?.type ?? '').toUpperCase()
+    if (t === 'ANALYSIS_COMPLETED' || t === 'ANALYSIS_COMPLETE') {
+      void refetch()
+    }
+  }, [lastMessage, refetch])
 
   if (loading) return <div className="p-6 text-sm text-muted">Loading engine data…</div>
   if (error) return <div className="p-6 text-sm text-danger">Error: {error}</div>

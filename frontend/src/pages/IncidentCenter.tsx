@@ -78,19 +78,19 @@ export default function IncidentCenter() {
                     <Link to={`/incidents/${inc.id}`} className="text-accent hover:underline font-mono">#{inc.id}</Link>
                   </td>
                   <td className="px-3 py-2.5 text-muted font-mono whitespace-nowrap">
-                    {new Date(inc.timestamp).toLocaleTimeString()}
+                    {inc.timestamp ? new Date(inc.timestamp).toLocaleTimeString() : '—'}
                   </td>
-                  <td className="px-3 py-2.5"><RiskBadge value={inc.severity} /></td>
-                  <td className="px-3 py-2.5 font-mono text-white">{inc.source_ip}</td>
-                  <td className="px-3 py-2.5 font-mono text-white">{inc.destination_ip}</td>
-                  <td className="px-3 py-2.5 font-mono text-muted">{inc.port}</td>
-                  <td className="px-3 py-2.5 text-muted truncate max-w-36">{inc.triggered_engine}</td>
+                  <td className="px-3 py-2.5"><RiskBadge value={inc.severity || 'LOW'} /></td>
+                  <td className="px-3 py-2.5 font-mono text-white">{inc.source_ip || '—'}</td>
+                  <td className="px-3 py-2.5 font-mono text-white">{inc.destination_ip || '—'}</td>
+                  <td className="px-3 py-2.5 font-mono text-muted">{inc.port || '—'}</td>
+                  <td className="px-3 py-2.5 text-muted truncate max-w-36">{inc.triggered_engine || '—'}</td>
                   <td className="px-3 py-2.5">
-                    <span className={`font-bold font-mono ${inc.risk_score >= 7 ? 'text-danger' : inc.risk_score >= 5 ? 'text-warning' : 'text-success'}`}>
-                      {inc.risk_score.toFixed(1)}
+                    <span className={`font-bold font-mono ${(inc.risk_score ?? 0) >= 7 ? 'text-danger' : (inc.risk_score ?? 0) >= 5 ? 'text-warning' : 'text-success'}`}>
+                      {(inc.risk_score ?? 0).toFixed(1)}
                     </span>
                   </td>
-                  <td className="px-3 py-2.5"><RiskBadge value={inc.classification} /></td>
+                  <td className="px-3 py-2.5"><RiskBadge value={inc.classification || 'NORMAL'} /></td>
                 </tr>
               ))}
               {incidents.length === 0 && (

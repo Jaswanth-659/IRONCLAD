@@ -14,6 +14,8 @@ from ironclad.server.models import (
     DataLossResponse,
     DynamicThresholdsResponse,
     EnginesResponse,
+    IPValidationRequest,
+    IPValidationResponse,
     OverviewStats,
     PrimaryEngineDetail,
     RiskFactorResponse,
@@ -179,6 +181,8 @@ def get_all_subengines(session_id: Optional[str] = None) -> List[SubEngineDetail
     if session_id:
         cur = conn.execute("SELECT task_id FROM analysis_sessions WHERE task_id = ?", (session_id,))
         session = cur.fetchone()
+        if not session:
+            return []
     else:
         cur = conn.execute("SELECT task_id FROM analysis_sessions WHERE status = 'COMPLETED' ORDER BY id DESC LIMIT 1")
         session = cur.fetchone()
@@ -230,7 +234,19 @@ def get_network_topology(session_id: Optional[str] = None) -> TopologyResponse:
     if session_id:
         cur = conn.execute("SELECT task_id FROM analysis_sessions WHERE task_id = ?", (session_id,))
         target_session = cur.fetchone()
-    if not target_session:
+        if not target_session:
+            return TopologyResponse(
+                session_id=session_id,
+                nodes=[],
+                links=[],
+                total_nodes=0,
+                total_links=0,
+                total_hosts=0,
+                total_connections=0,
+                suspicious_hosts=0,
+                critical_hosts=0,
+            )
+    else:
         cur = conn.execute("SELECT task_id FROM analysis_sessions WHERE status = 'COMPLETED' ORDER BY id DESC LIMIT 1")
         target_session = cur.fetchone()
 
@@ -429,21 +445,27 @@ def get_risk_factor(session_id: Optional[str] = None) -> RiskFactorResponse:
     loss_data = get_session_data_loss(sid)
     flags = get_session_dynamic_flags(sid)
 
-    # Determine contributions
+    # Determine contributions (fine-tuned synthesis)
     data_loss_contribution = 0.0
-    if loss_data and loss_data.get("overall_loss_percentage") is not None:
-        lp = loss_data["overall_loss_percentage"]
-        if lp > 2.0:
-            data_loss_contribution = round((lp - 2.0) * 0.15 if lp <= 10.0 else 1.2 + min(1.3, (lp - 10.0) * 0.08), 2)
+    if loss_data:
+        lp = loss_data.get("overall_loss_percentage") or 0.0
+        proto_m = loss_data.get("protocol_metrics") or {}
+        tcp_m = proto_m.get("TCP") or {}
+        retrans = tcp_m.get("retransmissions") or 0
+        observed = tcp_m.get("packets_observed") or 0
+        retrans_rate = (retrans / observed * 100.0) if observed > 0 else 0.0
+        eff_loss = max(lp, retrans_rate)
+        if eff_loss > 2.0:
+            data_loss_contribution = round((eff_loss - 2.0) * 0.15 if eff_loss <= 10.0 else 1.2 + min(1.3, (eff_loss - 10.0) * 0.08), 2)
 
     traffic_rate_contribution = 0.0
     crit_flags = [f for f in flags if f.get("severity") in ("CRITICAL", "HIGH")]
     if crit_flags:
         traffic_rate_contribution = 1.0
 
-    # Multi-host calculation from topology_nodes
+    # Multi-host calculation from topology_nodes (fine-tuned: 2 hosts -> +0.5, 3 hosts -> +1.0, 4+ hosts -> +1.5)
     cur_nodes = conn.execute(
-        "SELECT COUNT(DISTINCT ip) as cnt, SUM(CASE WHEN is_suspicious = 1 OR risk_score >= 6.0 THEN 1 ELSE 0 END) as susp_cnt FROM topology_nodes WHERE session_id = ?",
+        "SELECT COUNT(DISTINCT ip) as cnt, SUM(CASE WHEN is_suspicious = 1 OR risk_score >= 4.0 THEN 1 ELSE 0 END) as susp_cnt FROM topology_nodes WHERE session_id = ?",
         (sid,)
     )
     node_row = cur_nodes.fetchone()
@@ -451,6 +473,9 @@ def get_risk_factor(session_id: Optional[str] = None) -> RiskFactorResponse:
     susp_hosts = node_row["susp_cnt"] if node_row and node_row["susp_cnt"] else 0
 
     multi_host_contribution = 0.0
+    if susp_hosts and susp_hosts > 1:
+        multi_host_contribution = round(min(1.5, 0.5 * (susp_hosts - 1)), 2)
+
     # Classification band
     from ironclad.engines.scoring import DEFAULT_SCORING_CONFIG
     band = DEFAULT_SCORING_CONFIG.classify_score(overall_risk).value
@@ -460,12 +485,10 @@ def get_risk_factor(session_id: Optional[str] = None) -> RiskFactorResponse:
         f"Primary detection engines contributed: {', '.join([f'{k}: {v}' for k, v in primary_signals.items()]) or 'None'}.",
     ]
     if data_loss_contribution > 0:
-        explanation_steps.append(f"Data loss factor added +{data_loss_contribution} risk ({loss_data.get('overall_loss_percentage')} % loss observed).")
+        explanation_steps.append(f"Data loss factor added +{data_loss_contribution} risk (observed transmission degradation factor).")
     if traffic_rate_contribution > 0:
         explanation_steps.append(f"Traffic velocity surge added +{traffic_rate_contribution} risk ({len(crit_flags)} rate anomaly flags).")
-
-    if susp_hosts and susp_hosts > 1:
-        multi_host_contribution = round(min(1.5, 0.4 * (susp_hosts - 1)), 2)
+    if multi_host_contribution > 0:
         explanation_steps.append(f"Multi-host coordination factor added +{multi_host_contribution} risk ({susp_hosts} suspicious interacting nodes).")
 
     # Cross corroboration: count how many primary engines have elevated risk (>= 4.0)
@@ -490,3 +513,35 @@ def get_risk_factor(session_id: Optional[str] = None) -> RiskFactorResponse:
         calculation_explanation=explanation_steps,
         scoring_metadata={"session_id": sid, "flags_count": len(flags), "total_hosts": total_hosts, "suspicious_hosts": susp_hosts},
     )
+
+
+@router.post("/validate-ip", response_model=IPValidationResponse)
+def validate_ip_post(request: IPValidationRequest) -> IPValidationResponse:
+    """
+    Validate an IPv4 candidate string using strict regular expression and RFC semantic parsing.
+    Validates octets 0-255, rejects malformed IPs, checks leading zeros, and categorizes address space.
+    """
+    from ironclad.core.ip_validation import IPV4_STRICT_REGEX, validate_ipv4
+    raw = request.ip.strip() if request.ip else ""
+    regex_ok = bool(IPV4_STRICT_REGEX.match(raw))
+    res = validate_ipv4(raw)
+    return IPValidationResponse(
+        raw_ip=res.raw_ip,
+        normalized_ip=res.normalized_ip,
+        is_valid=res.is_valid,
+        regex_matched=regex_ok,
+        category=res.category.value,
+        is_private=res.is_private,
+        is_public=res.is_public,
+        is_loopback=res.is_loopback,
+        is_link_local=res.is_link_local,
+        is_multicast=res.is_multicast,
+        is_reserved=res.is_reserved,
+        error_reason=res.error_reason,
+    )
+
+
+@router.get("/validate-ip", response_model=IPValidationResponse)
+def validate_ip_get(ip: str) -> IPValidationResponse:
+    """Convenience GET endpoint for IP regex and semantic validation."""
+    return validate_ip_post(IPValidationRequest(ip=ip))

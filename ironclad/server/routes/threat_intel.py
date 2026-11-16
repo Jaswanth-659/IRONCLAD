@@ -22,16 +22,19 @@ def get_threat_intelligence() -> ThreatIntelResponse:
 
     indicators: List[ThreatIntelIndicator] = []
     for r in rows:
+        row_dict = dict(r)
         indicators.append(
             ThreatIntelIndicator(
-                indicator=r["indicator"],
-                type=r["type"],
-                threat_type=r["threat_type"],
-                confidence=r["confidence"],
-                source=r["source"],
-                description=r["description"] or "",
-                first_seen=r["first_seen"] or "",
-                last_seen=r["last_seen"] or "",
+                id=row_dict.get("id"),
+                indicator=row_dict["indicator"],
+                type=row_dict.get("type", "IP"),
+                indicator_type=row_dict.get("type", "IP"),
+                threat_type=row_dict["threat_type"],
+                confidence=row_dict["confidence"],
+                source=row_dict["source"],
+                description=row_dict.get("description") or "",
+                first_seen=row_dict.get("first_seen") or "",
+                last_seen=row_dict.get("last_seen") or "",
             )
         )
 

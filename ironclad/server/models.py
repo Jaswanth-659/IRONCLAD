@@ -56,8 +56,10 @@ class EnginesResponse(BaseModel):
 
 
 class ThreatIntelIndicator(BaseModel):
+    id: Optional[int] = None
     indicator: str
-    type: str
+    type: str = "IP"
+    indicator_type: Optional[str] = None
     threat_type: str
     confidence: float
     source: str
@@ -274,3 +276,22 @@ class RiskFactorResponse(BaseModel):
     cross_corroboration_delta: float = 0.0
     calculation_explanation: List[str] = Field(default_factory=list)
     scoring_metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class IPValidationRequest(BaseModel):
+    ip: str
+
+
+class IPValidationResponse(BaseModel):
+    raw_ip: str
+    normalized_ip: Optional[str] = None
+    is_valid: bool
+    regex_matched: bool
+    category: str
+    is_private: bool
+    is_public: bool
+    is_loopback: bool
+    is_link_local: bool
+    is_multicast: bool
+    is_reserved: bool
+    error_reason: Optional[str] = None

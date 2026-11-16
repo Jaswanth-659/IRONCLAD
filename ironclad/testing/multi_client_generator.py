@@ -34,9 +34,10 @@ class SimulationScenario(str, Enum):
 
 PRIMARY_RECEIVER_IP = "192.168.1.10"
 CLIENT_IPS = {
-    "CLIENT_A": "192.168.1.51",
-    "CLIENT_B": "192.168.1.52",
-    "CLIENT_C": "192.168.1.53",
+    "CLIENT_A": "192.168.1.51",  # Laptop 1 (Periodic C2 beaconing)
+    "CLIENT_B": "192.168.1.52",  # Laptop 2 (TCP sequence gaps & retransmissions)
+    "CLIENT_C": "192.168.1.53",  # Laptop 3 (UDP controlled sequence loss & burst)
+    "CLIENT_D": "192.168.1.54",  # Laptop 4 (Port reconnaissance & horizontal sweep)
 }
 
 
@@ -216,16 +217,19 @@ def generate_scenario_d_compound_anomalies(
     output_path: str,
 ) -> Dict[str, Any]:
     """
-    Scenario D: Multiple simultaneous anomalies across clients.
-    - Client A: Slow beaconing (periodic C2 simulation)
-    - Client B: TCP sequence gaps and retransmissions (degraded link / data loss)
-    - Client C: High volumetric rate surge (burst exfiltration)
+    Scenario D: Multiple simultaneous attack vectors from >2 client laptops hitting 1 primary receiver.
+    Primary Receiver (Target Laptop): 192.168.1.10
+    Attacking Laptops:
+    - Client 1 / Laptop A (192.168.1.51): Slow steady periodic C2 beaconing (Periodicity Anomaly)
+    - Client 2 / Laptop B (192.168.1.52): Degraded TCP stream with sequence gaps and retransmissions (TCP Data Loss Anomaly)
+    - Client 3 / Laptop C (192.168.1.53): Volumetric burst with controlled UDP sequence loss (25% dropped tagged packets)
+    - Client 4 / Laptop D (192.168.1.54): Rapid port reconnaissance & horizontal scan sweep across management ports
     """
     packets = []
     base_time = 1700000000.0
     current_time = base_time
 
-    # Client A: Periodic Beaconing with low jitter (Periodicity Anomaly)
+    # Client A (Laptop 1): Periodic Beaconing with low jitter (Periodicity Anomaly)
     for b in range(15):
         pkt_a = (
             Ether()
@@ -236,7 +240,7 @@ def generate_scenario_d_compound_anomalies(
         pkt_a.time = base_time + b * 1.0  # Exactly 1.00s interval (CV -> 0.0)
         packets.append(pkt_a)
 
-    # Client B: TCP Retransmissions and Gaps (Data Loss Anomaly)
+    # Client B (Laptop 2): TCP Retransmissions and Sequence Gaps (Data Loss Anomaly)
     for r in range(10):
         # Normal packet
         pkt_b = (
@@ -259,20 +263,33 @@ def generate_scenario_d_compound_anomalies(
             retrans_pkt.time = base_time + r * 0.15 + 0.05
             packets.append(retrans_pkt)
 
-    # Client C: Controlled UDP Loss + Rate Surge (Rate + Loss Anomalies)
+    # Client C (Laptop 3): Controlled UDP Sequence Loss (25% Drop) + High Rate Burst
     total_c_expected = 60
+    c_received = 0
     for c in range(1, total_c_expected + 1):
         if c % 4 == 0:
-            # Drop 25% of packets
+            # Controlled 25% drop rate: do not transmit packet
             continue
         pkt_c = (
             Ether()
             / IP(src=CLIENT_IPS["CLIENT_C"], dst=PRIMARY_RECEIVER_IP)
             / UDP(sport=55000, dport=8443)
-            / Raw(load=f"IRONCLAD_SEQ:{c:06d}:{total_c_expected:06d}:HIGH_RATE_EXFIL".encode() + b"X" * 200)
+            / Raw(load=f"IRONCLAD_SEQ:{c:06d}:{total_c_expected:06d}:CONTROLLED_UDP_DATA_LOSS".encode() + b"X" * 200)
         )
-        pkt_c.time = base_time + (c * 0.01)  # 100 PPS
+        pkt_c.time = base_time + (c * 0.01)  # 100 PPS high-rate burst
         packets.append(pkt_c)
+        c_received += 1
+
+    # Client D (Laptop 4): Rapid Port Reconnaissance Sweep against Primary Laptop (Scan Anomaly)
+    scan_ports = [21, 22, 23, 25, 80, 443, 3306, 3389, 8080, 8443]
+    for idx, port in enumerate(scan_ports):
+        pkt_d = (
+            Ether()
+            / IP(src=CLIENT_IPS["CLIENT_D"], dst=PRIMARY_RECEIVER_IP)
+            / TCP(sport=61000 + idx, dport=port, flags="S", seq=90000 + idx * 1000)
+        )
+        pkt_d.time = base_time + 0.2 + (idx * 0.04)
+        packets.append(pkt_d)
 
     packets.sort(key=lambda p: getattr(p, "time", 0.0))
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -282,11 +299,17 @@ def generate_scenario_d_compound_anomalies(
         "scenario": "D_COMPOUND_ANOMALIES",
         "output_path": output_path,
         "total_packets": len(packets),
+        "primary_laptop": PRIMARY_RECEIVER_IP,
+        "attacking_laptops": list(CLIENT_IPS.values()),
+        "controlled_loss_expected": total_c_expected,
+        "controlled_loss_received": c_received,
+        "controlled_loss_percentage": round(((total_c_expected - c_received) / total_c_expected) * 100.0, 2),
         "anomalies_present": [
-            "PERIODICITY_BEACON_CLIENT_A",
-            "TCP_RETRANSMISSIONS_CLIENT_B",
-            "UDP_DATA_LOSS_CLIENT_C",
-            "RATE_SURGE_CLIENT_C",
+            "PERIODICITY_BEACON_CLIENT_A_192.168.1.51",
+            "TCP_RETRANSMISSIONS_CLIENT_B_192.168.1.52",
+            "UDP_CONTROLLED_25PCT_LOSS_CLIENT_C_192.168.1.53",
+            "RATE_SURGE_CLIENT_C_192.168.1.53",
+            "PORT_RECONNAISSANCE_CLIENT_D_192.168.1.54",
         ],
     }
 

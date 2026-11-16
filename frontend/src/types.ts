@@ -293,3 +293,68 @@ export interface RiskFactorData {
   calculation_explanation: string[]
   scoring_metadata: Record<string, unknown>
 }
+
+export interface LossControlConfig {
+  target_loss_pct: number
+  mode: string
+  burst_length: number
+  target_sources: string[]
+  enabled: boolean
+  buffer_max_bytes: number
+  buffer_retention_sec: number
+  out_of_order_wait_ms: number
+}
+
+export interface RecoveryRecordItem {
+  id?: number
+  session_id: string
+  seq_num: number
+  protocol: string
+  src_ip: string
+  dst_ip: string
+  recovery_method: string
+  recovery_latency_ms: number
+  validation_status: string
+  hash_algorithm: string
+  checksum_expected?: string | null
+  checksum_actual?: string | null
+  payload_bytes: number
+  timestamp: number
+}
+
+export interface LossEventItem {
+  id?: number
+  session_id: string
+  seq_num: number
+  protocol: string
+  src_ip: string
+  dst_ip: string
+  loss_type: string
+  detection_timestamp: number
+  waiting_window_ms: number
+  is_confirmed_loss: number
+  payload_bytes: number
+  payload_hash?: string | null
+}
+
+export interface LossControlMetrics {
+  session_id: string
+  total_losses_detected: number
+  total_recovered_packets: number
+  total_unrecovered_packets: number
+  pending_losses: number
+  recovery_rate_pct: number
+  mean_recovery_latency_ms: number
+  corrupted_recoveries_rejected: number
+  duplicate_recoveries_filtered: number
+  buffer_overflow_drops: number
+  buffer_utilization_pct: number
+  buffer_current_bytes: number
+  buffer_max_bytes: number
+  sensor_capture_drops: number
+  configured_loss_pct: number
+  controller_running: boolean
+  loss_mode: string
+  target_sources: string[]
+  database_session?: Record<string, unknown> | null
+}
